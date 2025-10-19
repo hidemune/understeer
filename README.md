@@ -4,7 +4,7 @@
 
 ### ― Linux向け Force Feedback Wheel + Shifter 統合ツール ―
 
-*(English below)*
+(English below)
 
 ---
 
