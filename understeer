@@ -36,15 +36,12 @@ fi
 
 
 echo ""
-echo "Force feedback is currently available in the following titles:"
+echo "You can select \"Force feedback mode:\""
 echo ""
-echo "* Test Drive Unlimited Solar Crown"
-echo "* rFactor2"
-echo ""
-echo "Please Select FFB mode."
+echo "Please Select"
 echo ""
 echo "1) WITHOUT Force Feedback mode"
-echo "Def) with FFB mode"
+echo "Enter) with FFB mode"
 read ff
 mode=""
 if [ "$ff" = "1" ]; then
@@ -56,10 +53,10 @@ echo "2) rFactor2                               (FFB OK)"
 echo "3) City Car Driving                       (FFB OK)"
 echo "4) Project Cars 2                         (FFB OK)"
 echo "5) Forza Horizon 5                        (FFB OK)"
+echo "6) Euro Truck                             (FFB OK)"
 
-echo "6) Asseto Corsa           (Unchecked)"
-echo "7) Dirt Rally             (Unchecked)"
-echo "8) Euro Truck             (Unchecked)"
+echo "11) Asseto Corsa           (FFB cannot)"
+echo "12) Dirt Rally             (未対応effect: FRICTION(84) )"
 echo ""
 echo "Please Select.. (case sensitive)"
 read sel
@@ -109,6 +106,16 @@ if [ "$sel" = "5" ]; then
 fi
 
 if [ "$sel" = "6" ]; then
+  echo "# 227300 # Euro Truck"
+  flg="T"
+  steam steam://rungameid/227300 >/dev/null 2>&1 &
+  # --gear-map gears.dat        ニュートラル入力が別途必要な場合に指定
+  sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode 
+fi
+
+
+
+if [ "$sel" = "11" ]; then
   echo "# 244210 # Asseto Corsa"
   flg="T"
   steam steam://rungameid/244210 >/dev/null 2>&1 &
@@ -116,20 +123,13 @@ if [ "$sel" = "6" ]; then
 fi
 
 
-if [ "$sel" = "7" ]; then
+if [ "$sel" = "12" ]; then
   echo "# 310560 # Dirt Rally"
   flg="T"
   steam steam://rungameid/310560 >/dev/null 2>&1 &
   sudo python3 understeer.py --ff-pass-through$mode  
 fi
 
-if [ "$sel" = "8" ]; then
-  echo "# 227300 # Euro Truck"
-  flg="T"
-  steam steam://rungameid/227300 >/dev/null 2>&1 &
-  # --gear-map gears.dat        ニュートラル入力が別途必要な場合に指定
-  sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode  -vvv
-fi
 
 
 # -------------------
@@ -147,7 +147,7 @@ if [ "$flg" = "Def" ]; then
     echo ""
     echo "o) --ff-off Test"
     echo ""
-    echo "Def) Only Understeer with FFB (no Grab with DBG-MSG)"
+    echo "Enter) Only Understeer with FFB (no Grab with DBG-MSG)"
     echo ""
     echo "Please Select.. (case sensitive)"
     read sel
