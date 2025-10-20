@@ -49,14 +49,13 @@ if [ "$ff" = "1" ]; then
 fi
 
 echo "1) Test Drive Unlimited Solar Crown       (FFB OK)"
-
 echo "2) rFactor2                               (未チェック)"
 echo "3) City Car Driving                       (未チェック)"
 echo "4) Project Cars 2                         (未チェック)"
-echo "5) Forza Horizon 5                        (未チェック)"
-echo "6) Euro Truck                             (未チェック)"
+echo "5) Forza Horizon 5                        (FFB OK)"
+echo "6) Euro Truck                             (FFB OK)"
 
-echo "11) Asseto Corsa           (FFB cannot)"
+echo "11) Asseto Corsa           (FFB cannot? 未チェック)"
 echo "12) Dirt Rally             (未対応effect: FRICTION(84) )"
 echo ""
 echo "Please Select.. (case sensitive)"

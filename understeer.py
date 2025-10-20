@@ -69,6 +69,8 @@ ABS = {
 # 以下はClass内部で設定
 # DEBUG_TELEMETORY = False
 
+CREATED_UI = False
+
 import evdev
 import fcntl, struct
 from evdev import ecodes, InputEvent, UInput
@@ -1659,7 +1661,6 @@ class UInputFFDevice:
         self._dedup_window_ms = 8  # 短い同一更新はスキップ（必要に応じて 3〜15ms で調整）
         
         
-        self._ff_lock = threading.Lock()
         self._last_ff_end_ts = 0.0
         self._min_ff_gap_sec = 0.002  # 2ms 程度の最小間隔（必要なら 0.0 に）
         self._last_seen_req = (-1, -1)  # (request_id, effect.type)
@@ -1790,6 +1791,7 @@ class UInputFFDevice:
         # 6)
         fcntl.ioctl(self.ui_base_fd, UI_DEV_CREATE)
         logging.debug("UI_DEV_CREATE  OK")
+        CREATED_UI = True
         
         """
         作成後に能⼒を弄ると udev->state == UIST_CREATED で EINVAL になります。
@@ -1944,24 +1946,27 @@ class UInputFFDevice:
         #logging.debug(f"LoopWait_ms: {LoopWait_ms}")
         while not self._ff_srv_stop.is_set():
             t0 = time.perf_counter_ns()
-            evs = p.poll(LoopWait_ms)
+            #evs = p.poll(LoopWait_ms)
             dt_ms = (time.perf_counter_ns() - t0) / 1e6
-            if not evs:
-                if self.us.DEBUG_TELEMETORY:
-                    logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
-                write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
-                time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
-                continue
+            #if not evs:
+            #    if self.us.DEBUG_TELEMETORY:
+            #        logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
+            #    write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
+            #    time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+            #    continue
             # revents を可視化
-            for fd, re in evs:
-                if self.us.DEBUG_TELEMETORY:
-                    logging.debug(f"[POLL] dt={dt_ms:.3f} ms revents=0x{re:02x} "
-                              f"(IN={bool(re & select.POLLIN)} ERR={bool(re & select.POLLERR)} HUP={bool(re & select.POLLHUP)})")
+            #for fd, re in evs:
+            #    if self.us.DEBUG_TELEMETORY:
+            #        logging.debug(f"[POLL] dt={dt_ms:.3f} ms revents=0x{re:02x} "
+            #                  f"(IN={bool(re & select.POLLIN)} ERR={bool(re & select.POLLERR)} HUP={bool(re & select.POLLHUP)})")
             # HUP/ERR は“粘着”するので、見つけたら即終了orリセット
-            if any(re & (select.POLLERR | select.POLLHUP) for _, re in evs):
-                logging.error("[ERROR/POLL] ERR/HUP detected on uinput; stopping ff server loop")
-                break
-
+            #if any(re & (select.POLLERR | select.POLLHUP) for _, re in evs):
+            #    logging.error("[ERROR/POLL] ERR/HUP detected on uinput; stopping ff server loop")
+            #    break
+            #write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
+            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+            if self.us.DEBUG_TELEMETORY:
+                logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
             # ここで “完全に” ドレインする（未処理を残さない）
             drained = 0
             while True:
@@ -2009,24 +2014,27 @@ class UInputFFDevice:
                                 except Exception as e:
                                     up.retval = -getattr(e, "errno", errno.EIO)
                                     logging.error("UPLOAD handling error errno=%s", getattr(e, "errno", "??"))
+                                    os.exit(1)
                                 #finally:
                                 #    self._last_seen_req = (req_id, eff_t)
 
                             # --- END は必ず対で呼ぶ ---
                             try:
+                                time.sleep(LoopWait_sec / 10) #fcntl.ioctl の前にも必要っぽい気がする
                                 fcntl.ioctl(self.ui_base_fd, UI_END_FF_UPLOAD, up, True)
                                 time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
                                 logging.debug(f"Pys / UI_END_FF_UPLOAD: type={FfEvioMapper._ff_type_name(eff_t)} req_id={req_id}")
                             except OSError as e:
                                 # EINVAL(22) 等は握り潰して継続（レース/二重END許容）
-                                logging.error("UI_END_FF_UPLOAD failed: %r ; continue", e)
+                                logging.warning("UI_END_FF_UPLOAD failed: %r ; continue", e)
+                                time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
                             self._last_ff_end_ts = time.monotonic()
                         finally:
                             # 通常パスで END 済みならフォールバック不要
                             pass
                     drained += 1
 
-                elif kind == "ERASE" or True: # ERASE
+                elif kind == "ERASE": # ERASE
                     er = obj    # ER オブジェクト
                     logging.debug(f"path[ui_base_fd]={fd_path(self.ui_base_fd)}")
                     logging.debug("Pys / UI_BEGIN_FF_ERASE (virt_id=%d)", int(er.effect_id))
@@ -2041,21 +2049,27 @@ class UInputFFDevice:
                             except Exception as e:
                                 er.retval = -getattr(e, "errno", errno.EIO)
                             try:
+                                time.sleep(LoopWait_sec / 10) #fcntl.ioctl の前にも必要っぽい気がする
                                 fcntl.ioctl(self.ui_base_fd, UI_END_FF_ERASE, er, True)
                                 time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
                                 logging.debug(f"Pys / UI_END_FF_ERASE: type={FfEvioMapper._ff_type_name(er.effect_id)} req_id={er.request_id}")
                             except OSError as e:
                                 logging.error("Can not UI_END_FF_ERASE: %r (continue)", e)
+                                os.exit(1)
                         finally:
                             # 通常パスで END 済みならフォールバック不要
                             pass
                     drained += 1
+
             # LoopEnd: UP,ER どっちも終わったらここに来る。
             # ドレイン有無に関わらず最後に 1 回だけ SYN
             if drained:
                 logging.warning("[Psy Poll] drained %d FF requests", drained)
-            write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
-            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+            # 初期化直後は無いのでIF文
+            if CREATED_UI:
+                #print(get_path_from_fd(self.ui_base_fd))
+                write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
+            time.sleep(LoopWait_sec) # Loop Wait 4ms
         # LoopEnd: ドライバ終了のタイミングでここ
 
     import os, fcntl, select, errno, logging
@@ -2102,7 +2116,6 @@ class UInputFFDevice:
         virt_id = int(er.effect_id)
         logging.debug("Pys / BEGIN_ERASE req=%d virt_id=%d", int(er.request_id), virt_id)
         
-        #with self._ff_lock:
         if True:
             phys_id = self.ff_mapper._virt2phys.pop(virt_id, -1)
             if phys_id >= 0:
@@ -3401,7 +3414,7 @@ class UnderSteer:
             else:
                 # その他は無視（EV_MSC, EV_REL など）
                 pass
-            # ここいらない気がする
+            # Loop 完了したらここに来る
             # 一通り終わったよ的な通知を出す
             #self.ui.syn()
             #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
