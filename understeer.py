@@ -51,7 +51,7 @@ from collections import defaultdict
 # 250Hz (=  4.00 ms)
 # 125Hz (=  8.00 ms)
 #  60HZ (= 16.66 ms)
-LoopWait_ms     = 0.2   # IO Error 回避のため、少しだけ必要（2.2 良さそう）
+LoopWait_ms     = 2     # pollはmsの整数。2〜5msで調整（FH5/PCARS2向け）
 LoopWait_sec    = LoopWait_ms / 1000.0
 
 # 5 sec
@@ -124,6 +124,7 @@ class DeltaColorFormatter(logging.Formatter):
         super().__init__(fmt=fmt, datefmt=datefmt)
         self.use_color = use_color
         self._last_mono: Optional[float] = None
+        self._error_count: int = 0  # 累積エラー件数
 
     def format(self, record: logging.LogRecord) -> str:
         # Δ（直前ログからの経過）の計算は monotonic を使用
@@ -134,11 +135,18 @@ class DeltaColorFormatter(logging.Formatter):
             delta_ms = (now_mono - self._last_mono) * 1000.0
         self._last_mono = now_mono
 
+        # エラー件数カウント
+        if record.levelno >= logging.ERROR:
+            self._error_count += 1
+
         # Delta をレコードに埋め込む（フォーマット文字列で使えるように）
         record.delta_ms = delta_ms
 
         # 親クラスで整形
         out = super().format(record)
+
+        # 行頭に累積エラー件数を追加
+        out = f"E.Cnt:{self._error_count:02d} {out}"
 
         # 色付け（必要なときだけ）
         if self.use_color:
@@ -223,6 +231,59 @@ except OSError:
     print('UnderSteer is already running. Exit.', file=sys.stderr)
     sys.exit(1)
 
+
+
+def _sanitize_periodic(eff):
+    """FF_PERIODICの最低限の正規化。EINVALを避けるための下駄"""
+    p = eff.u.periodic
+    # 1) magnitude==0 は多くの実機で EINVAL。→ ゼロは送らずソフト側で成功扱いにする方が安全
+    if int(p.magnitude) == 0:
+        return "skip_zero"
+
+    # 2) waveform 非対応なら SINE へ
+    #if int(p.waveform) not in SUPPORTED_WAVEFORMS:
+    #    p.waveform = ecodes.FF_SINE
+
+    # 3) period==0 を 1ms に
+    if int(p.period) <= 0:
+        p.period = 1
+
+    # 4) 範囲ガード（Linux input の想定範囲）
+    # magnitude: 0..0x7fff（符号付きだが正で使うのが通例）
+    if int(p.magnitude) < 1:
+        p.magnitude = 1
+    if int(p.magnitude) > 0x7fff:
+        p.magnitude = 0x7fff
+
+    # offset: -0x7fff..0x7fff
+    if int(p.offset) < -0x7fff:
+        p.offset = -0x7fff
+    if int(p.offset) >  0x7fff:
+        p.offset =  0x7fff
+
+    # phase: 0..0xffff（実装によるが 0..0x7fff でもOK）
+    if int(p.phase) < 0:
+        p.phase = 0
+
+    # envelope: 長さ(ms)は >=0、level は 0..0x7fff
+    env = p.envelope
+    for name in ("attack_length", "fade_length"):
+        if int(getattr(env, name)) < 0:
+            setattr(env, name, 0)
+    for name in ("attack_level", "fade_level"):
+        v = int(getattr(env, name))
+        if v < 0: setattr(env, name, 0)
+        if v > 0x7fff: setattr(env, name, 0x7fff)
+
+    # replay: length==0 は弾く実装あり → 最低1ms
+    if int(eff.replay.length) <= 0:
+        eff.replay.length = 1
+
+    # direction 未設定なら 0
+    if int(eff.direction) < 0:
+        eff.direction = 0
+
+    return "ok"
 
 import ctypes
 import logging
@@ -325,7 +386,7 @@ def get_path_from_fd(fd: int) -> str:
     except FileNotFoundError:
         return None
     except OSError as e:
-        print(f"Error reading fd {fd}: {e}")
+        logging.error(f"Error reading fd {fd}: {e}")
         return None
 
 
@@ -427,7 +488,7 @@ def write_ff_safe(dev, code, value, *,
     - 長時間ブロックしそうならタイムアウトで諦めて上位へ返す
     戻り値: "ok" / "skip" / "timeout" / "gone" / "unsupported" / "ioerr"
     """
-    print("ここって使ってる？？")
+    logging.error("ここって使ってる？？")
     try:
         fd = dev.fileno()
         # 必須ではないが、念のため fd 実体をログできるように
@@ -512,7 +573,7 @@ class AsyncFFBProxy:
         物理 effect_id を返す。
         戻り値: (status, phys_id or None)
         """
-        print("使ってないはず")
+        logging.error("使ってないはず")
         fd = self._phys_fd()
         dev = getattr(self._handle, "dev", None)
         if fd is None or dev is None:
@@ -598,7 +659,7 @@ class AsyncFFBProxy:
           - erase:       {"effect_id": int}
           - upload|update: 将来実装（現状はスタブ）
         """
-        print("使ってないはず")
+        logging.error("使ってないはず")
         path = getattr(getattr(self._handle, "dev", None), "path", "(no-handle)")
         logging.debug(f"[FFB-Pys-SendToWheel]<dispatch_block>: {op} {path}")
         # op は (kind, payload) か、_QueuedOp(kind=..., payload=...) のどちらか
@@ -774,7 +835,7 @@ class AsyncFFBProxy:
                 pass
             return "ok:erase"
 
-        print(f"[ff] 実装が必要_dispatch_blocking skip:unknown-kind:{kind}")
+        logging.error(f"[ff] 実装が必要_dispatch_blocking skip:unknown-kind:{kind}")
         return f"skip:unknown-kind:{kind}"
 
 
@@ -864,7 +925,7 @@ class FfEvioMapper:
             self._virt2phys.pop(virt, None)
 
     def __repr__(self) -> str:
-        print("FfEvioMapper __repr__　使ってないと思う")
+        logging.error("FfEvioMapper __repr__　使ってないと思う")
         # 追加したらここに出す（将来 hidraw/TMFF2 直送などの分岐名も）
         return "<FfEvioMapper backend='EVIOCSFF/EVIOCRMFF' features='upload,erase'>"
 
@@ -895,7 +956,7 @@ class FfEvioMapper:
 
     @staticmethod
     def _ff_effect_to_dict(eff) -> dict:
-        #print("_ff_effect_to_dict")
+        #logging.error("_ff_effect_to_dict")
         # 共通ヘッダ
         d = {
             "type": int(eff.type),
@@ -1320,9 +1381,9 @@ UP_SZ = sizeof(uinput_ff_upload)
 _UI_UP_SZ = sizeof(uinput_ff_upload)
 _UI_ER_SZ = sizeof(uinput_ff_erase)
 
-print("DEBUG sizeof(uinput_ff_upload)   =", _UI_UP_SZ)
-print("DEBUG sizeof(uinput_ff_erase)    =", _UI_ER_SZ)
-print("DEBUG sizeof(ff_effect)          =", sizeof(ff_effect))
+logging.info(f"DEBUG sizeof(uinput_ff_upload)   ={_UI_UP_SZ}")
+logging.info(f"DEBUG sizeof(uinput_ff_erase)    ={_UI_ER_SZ}")
+logging.info(f"DEBUG sizeof(ff_effect)          ={sizeof(ff_effect)}")
 
 logging.debug(f"サイズのセルフチェック")
 logging.debug(f"sizeof(uinput_ff_upload)={ctypes.sizeof(uinput_ff_upload)}")
@@ -1387,10 +1448,10 @@ UI_END_FF_UPLOAD   = _IOW (UINPUT_IOCTL_BASE, 201, _UI_UP_SZ)
 UI_BEGIN_FF_ERASE  = _IOWR(UINPUT_IOCTL_BASE, 202, _UI_ER_SZ)
 UI_END_FF_ERASE    = _IOW (UINPUT_IOCTL_BASE, 203, _UI_ER_SZ)
 
-print("Debug UI_BEGIN_FF_UPLOAD =", UI_BEGIN_FF_UPLOAD)
-print("Debug UI_END_FF_UPLOAD   =", UI_END_FF_UPLOAD)
-print("Debug UI_BEGIN_FF_ERASE  =", UI_BEGIN_FF_ERASE)
-print("Debug UI_END_FF_ERASE    =", UI_END_FF_ERASE)
+logging.info(f"Debug UI_BEGIN_FF_UPLOAD ={UI_BEGIN_FF_UPLOAD}")
+logging.info(f"Debug UI_END_FF_UPLOAD   ={UI_END_FF_UPLOAD}")
+logging.info(f"Debug UI_BEGIN_FF_ERASE  ={UI_BEGIN_FF_ERASE}")
+logging.info(f"Debug UI_END_FF_ERASE    ={UI_END_FF_ERASE}")
 
 
 class input_absinfo(ctypes.Structure):
@@ -1569,7 +1630,7 @@ import threading, time, errno
 
 class UInputFFDevice:
     def __init__(self, ui_caps, name: str, vid: int=None, pid: int=None, version: int=0x0100, ff_effects_max=64, enqueue_cb=None, ui_base_fd=None, ui_base_path=None, loop=None, phys_dev=None, phys_event_path=None,ff_mapper=None,us=None, **kwargs):
-        print("[FFB] UInputFFDevice : __init__")
+        logging.debug("[FFB] UInputFFDevice : __init__")
         """
          ui_base_fd:       /dev/uinput の fd
          ui_base_path:     表示用
@@ -1636,7 +1697,7 @@ class UInputFFDevice:
         
         # R) UnderSteer ゲームから読み込み用
         # R) FF コールバックは “poll” の専用スレッドで待機
-        print(f"</dev/uinput>: FF request server start")
+        logging.info(f"</dev/uinput>: FF request server start")
         self._ff_srv_stop = threading.Event()
         self._ff_srv_thr = threading.Thread(
             target=self._ff_request_server_loop, name="uinput-ff-server", daemon=True
@@ -1670,7 +1731,6 @@ class UInputFFDevice:
 
         # --- ABS: ビット + レンジ設定（AbsInfo を使う）---
         for code, ai in ui_caps.get(E.EV_ABS, []):
-            #time.sleep(0.002)  # ★空振り時のCPU張り付き防止（2ms）
             self._setbit(UI_SET_ABSBIT, int(code))
             # AbsInfo(value,min,max,fuzz,flat,resolution)
             self._abs_setup(
@@ -1721,8 +1781,8 @@ class UInputFFDevice:
         us.ff_effects_max = ff_effects_max
         
         raw = bytes(us)
-        print("uinput_setup len=", len(raw))
-        print("hex:", raw.hex())
+        logging.debug("uinput_setup len={len(raw)}")
+        logging.debug("hex:{raw.hex()}")
 
         # 5)
         fcntl.ioctl(self.ui_base_fd, UI_DEV_SETUP, us)
@@ -1739,7 +1799,7 @@ class UInputFFDevice:
         # ★ 生成された eventX を特定して self.device に互換提供
         self.device = None  # evdev.UInput 互換プロパティ
         for _ in range(40):  # 最大 ~2秒待つ（50ms * 40）
-            print(f"[uinput] waiting for {name}...")
+            logging.debug(f"[uinput] waiting for {name}...")
             time.sleep(0.05)
             after = set(list_devices())
             new_nodes = sorted(after - before)
@@ -1759,7 +1819,7 @@ class UInputFFDevice:
         if not self.device:
             # 見つからなくても致命ではないが、従来コードが path を期待しているなら警告しておく
             logging.error("[error] Could not resolve created event node for uinput device; self.device is None")
-        print(f"uinput device ... {self.device}")
+        logging.info(f"uinput device ... {self.device}")
         # ※ emit() は /dev/uinput の self.fd に write するので挙動はそのままです
 
     def _install_waker(self):
@@ -1884,22 +1944,22 @@ class UInputFFDevice:
         #logging.debug(f"LoopWait_ms: {LoopWait_ms}")
         while not self._ff_srv_stop.is_set():
             t0 = time.perf_counter_ns()
-            
             evs = p.poll(LoopWait_ms)
-            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
-            
             dt_ms = (time.perf_counter_ns() - t0) / 1e6
             if not evs:
-                #logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
+                if self.us.DEBUG_TELEMETORY:
+                    logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
                 write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
+                time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
                 continue
             # revents を可視化
-            #for fd, re in evs:
-            #    logging.debug(f"[POLL] dt={dt_ms:.3f} ms revents=0x{re:02x} "
-            #                  f"(IN={bool(re & select.POLLIN)} ERR={bool(re & select.POLLERR)} HUP={bool(re & select.POLLHUP)})")
+            for fd, re in evs:
+                if self.us.DEBUG_TELEMETORY:
+                    logging.debug(f"[POLL] dt={dt_ms:.3f} ms revents=0x{re:02x} "
+                              f"(IN={bool(re & select.POLLIN)} ERR={bool(re & select.POLLERR)} HUP={bool(re & select.POLLHUP)})")
             # HUP/ERR は“粘着”するので、見つけたら即終了orリセット
             if any(re & (select.POLLERR | select.POLLHUP) for _, re in evs):
-                logging.error("[POLL] ERR/HUP detected on uinput; stopping ff server loop")
+                logging.error("[ERROR/POLL] ERR/HUP detected on uinput; stopping ff server loop")
                 break
 
             # ここで “完全に” ドレインする（未処理を残さない）
@@ -1921,8 +1981,7 @@ class UInputFFDevice:
                 """
 
                 if kind == "UPLOAD":
-
-                    up = obj
+                    up = obj    # UP オブジェクト
                     eff_t  = int(up.effect.type)
                     req_id = int(up.request_id)
                     logging.debug(f"path[ui_base_fd]={fd_path(self.ui_base_fd)}")
@@ -1939,18 +1998,19 @@ class UInputFFDevice:
                                 time.sleep(self._min_ff_gap_sec - dt)
 
                             # --- (req_id,type) が直前と同一なら coalesce（成功扱いで返す） ---
-                            if (req_id, eff_t) == self._last_seen_req or (drained > 0 and req_id == 0):
-                                up.retval = 0
-                                logging.debug("COALESCE UPLOAD: same (req_id,type) or req_id==0 after first -> skip heavy work")
-                            else:
+                            #if (req_id, eff_t) == self._last_seen_req or (drained > 0 and req_id == 0):
+                            #    up.retval = 0
+                            #    logging.debug("COALESCE UPLOAD: same (req_id,type) or req_id==0 after first -> skip heavy work")
+                            #else:
+                            if  True:
                                 try:
                                     # 実処理（物理側へ EVIOCSFF 等）
                                     self._handle_ff_upload(up)  # up.retval は内部で設定
                                 except Exception as e:
                                     up.retval = -getattr(e, "errno", errno.EIO)
-                                    logging.warning("UPLOAD handling error errno=%s", getattr(e, "errno", "??"))
-                                finally:
-                                    self._last_seen_req = (req_id, eff_t)
+                                    logging.error("UPLOAD handling error errno=%s", getattr(e, "errno", "??"))
+                                #finally:
+                                #    self._last_seen_req = (req_id, eff_t)
 
                             # --- END は必ず対で呼ぶ ---
                             try:
@@ -1962,19 +2022,12 @@ class UInputFFDevice:
                                 logging.error("UI_END_FF_UPLOAD failed: %r ; continue", e)
                             self._last_ff_end_ts = time.monotonic()
                         finally:
-                            # ここで BEGIN 未対応ケースは無いが、防御的に二重 END を許容
-                            if began:
-                                try:
-                                    fcntl.ioctl(self.ui_base_fd, UI_END_FF_UPLOAD, up, True)
-                                    time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
-                                    logging.debug(f"Pys / UI_END_FF_UPLOAD(fallback): type={FfEvioMapper._ff_type_name(eff_t)} req_id={req_id}")
-                                except Exception:
-                                    pass
+                            # 通常パスで END 済みならフォールバック不要
+                            pass
                     drained += 1
 
-                else:  # ERASE
-
-                    er = obj
+                elif kind == "ERASE" or True: # ERASE
+                    er = obj    # ER オブジェクト
                     logging.debug(f"path[ui_base_fd]={fd_path(self.ui_base_fd)}")
                     logging.debug("Pys / UI_BEGIN_FF_ERASE (virt_id=%d)", int(er.effect_id))
                     # ERASE も同じロックで直列化（BEGIN→処理→END）
@@ -1983,6 +2036,7 @@ class UInputFFDevice:
                         try:
                             try:
                                 self._handle_ff_erase(er)  # 中で物理 id 解放など
+                                #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
                                 er.retval = 0
                             except Exception as e:
                                 er.retval = -getattr(e, "errno", errno.EIO)
@@ -1992,23 +2046,17 @@ class UInputFFDevice:
                                 logging.debug(f"Pys / UI_END_FF_ERASE: type={FfEvioMapper._ff_type_name(er.effect_id)} req_id={er.request_id}")
                             except OSError as e:
                                 logging.error("Can not UI_END_FF_ERASE: %r (continue)", e)
-                            # ERASE 後も間隔を少し空ける（任意）
-                            time.sleep(self._min_ff_gap_sec)
                         finally:
-                            if began:
-                                try:
-                                    fcntl.ioctl(self.ui_base_fd, UI_END_FF_ERASE, er, True)
-                                    time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
-                                    logging.debug(f"Pys / UI_END_FF_ERASE(fallback): type={FfEvioMapper._ff_type_name(er.effect_id)} req_id={er.request_id}")
-                                except Exception:
-                                    pass
+                            # 通常パスで END 済みならフォールバック不要
+                            pass
                     drained += 1
-
+            # LoopEnd: UP,ER どっちも終わったらここに来る。
+            # ドレイン有無に関わらず最後に 1 回だけ SYN
             if drained:
-                # sync self.ui_base_fd
-                #write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
                 logging.warning("[Psy Poll] drained %d FF requests", drained)
             write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
+            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+        # LoopEnd: ドライバ終了のタイミングでここ
 
     import os, fcntl, select, errno, logging
 
@@ -2024,6 +2072,17 @@ class UInputFFDevice:
         返り値: ("UPLOAD", up) / ("ERASE", er) / (None, None)
         """
 
+        # 1) UPLOAD を先に試す（多い方を先に）
+        up = uinput_ff_upload()
+        try:
+            fcntl.ioctl(self.ui_base_fd, UI_BEGIN_FF_UPLOAD, up, True)  # O_NONBLOCK なので無ければ EAGAIN
+            return "UPLOAD", up
+        except OSError as e:
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EINVAL):
+                traceback.print_exc()
+                #pass
+                raise
+
         # 2) ERASE を試す
         er = uinput_ff_erase()
         try:
@@ -2035,26 +2094,16 @@ class UInputFFDevice:
                 #pass
                 raise
 
-        # 1) UPLOAD を先に試す（多い方を先に）
-        up = uinput_ff_upload()
-        try:
-            fcntl.ioctl(self.ui_base_fd, UI_BEGIN_FF_UPLOAD, up, True)  # O_NONBLOCK なので無ければ EAGAIN
-            return "UPLOAD", up
-        except OSError as e:
-            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EINVAL):
-                traceback.print_exc()
-                #pass
-                raise
         began = True
         
-
         return None, None
 
     def _handle_ff_erase(self, er: "uinput_ff_erase"):
         virt_id = int(er.effect_id)
         logging.debug("Pys / BEGIN_ERASE req=%d virt_id=%d", int(er.request_id), virt_id)
         
-        with self._ff_lock:
+        #with self._ff_lock:
+        if True:
             phys_id = self.ff_mapper._virt2phys.pop(virt_id, -1)
             if phys_id >= 0:
                 try:
@@ -2141,11 +2190,11 @@ class UInputFFDevice:
         new_phys_id  = -1
         
         # BEGIN 直後
-        #logging.debug("Pys / BEGIN_UPLOAD req=%d type=%d id(virt?)=%d len=%d delay=%d",
-        #              up.request_id, int(up.effect.type), int(up.effect.id),
-        #              int(up.effect.replay.length), int(up.effect.replay.delay))
-        #logging.debug("Pys / BEGIN_UPLOAD req=%u type=%u vID=%d (ff.id before=%d)",
-        #      int(up.request_id), int(eff.type), int(virt_id), int(eff.id))
+        logging.debug("Pys / BEGIN_UPLOAD req=%d type=%d id(virt?)=%d len=%d delay=%d",
+                      up.request_id, int(up.effect.type), int(up.effect.id),
+                      int(up.effect.replay.length), int(up.effect.replay.delay))
+        logging.debug("Pys / BEGIN_UPLOAD req=%u type=%u vID=%d (ff.id before=%d)",
+              int(up.request_id), int(eff.type), int(virt_id), int(eff.id))
         try:
             #logging.debug(f"[FFB-Pys(UP)] _handle_ff_upload: effect={FfEvioMapper._ff_type_name(eff.type)}")
             if int(eff.type) == ecodes.FF_CONSTANT:
@@ -2245,6 +2294,13 @@ class UInputFFDevice:
                 except Exception:
                     pass
 
+                status = _sanitize_periodic(eff)
+                if status == "skip_zero":
+                    # 「ゼロ強度の周期波」は実質無意味なので、物理送信せず成功扱いで返す
+                    logging.debug("PERIODIC magnitude=0 → skip upload (pretend success)")
+                    up.retval = 0
+                    return
+
                 # 共通処理ここから
                 new_phys_id = self.ff_mapper.upload_ff_effect_via_eviocsff(self.phys_fd, eff)
                 # 3) マップ更新（virt→phys, phys→virt）
@@ -2257,7 +2313,7 @@ class UInputFFDevice:
 
             else:
                 # 未対応タイプ
-                print(f"[FFB-Pys(UP)] 未対応effect= {FfEvioMapper._ff_type_name(eff.type)} ")
+                logging.error(f"[FFB-Pys(UP)] 未対応effect= {FfEvioMapper._ff_type_name(eff.type)} ")
                 self._effect_types[int(eff.id)] = eff.type
                 
                 # 共通処理ここから
@@ -2291,12 +2347,17 @@ class UInputFFDevice:
                     up.retval = 0
                 except OSError as e2:
                     up.retval = -getattr(e2, "errno", errno.EIO)
+                    logging.error("ERROR:_handle_ff_upload / 003")
+                    traceback.print_exc()
                     raise
             else:
                 up.retval = -getattr(e, "errno", errno.EIO)
+                logging.error("ERROR:_handle_ff_upload / 002")
+                traceback.print_exc()
                 raise
         except Exception as e:
-            #traceback.print_exc()
+            logging.error("ERROR:_handle_ff_upload / 001")
+            traceback.print_exc()
             raise
 
     def bind_ff_enqueue(self, cb):
@@ -2340,7 +2401,7 @@ class UInputFFDevice:
         if type_ != E.EV_SYN:
             self.syn()
             # ここ入れて様子見 key emit...
-            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+            time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
 
     def close(self):
         """
@@ -2636,7 +2697,7 @@ class GearMapper:
             #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
         ui.syn()
         # ここ入れて様子見 key emit...
-        #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+        time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
 
 # ------------------------
 # キーボードマッピング（TSV）
@@ -2808,10 +2869,10 @@ class KeymapTSV:
          名前入力（HAT0_LEFT 等）を受け、対応キーを押下/解放。
         """
         if self.kb is None:
-            #print("None...")
+            #logging.error("None...")
             return
         if name not in self.map_names:
-            #print("not in")
+            #logging.error("not in")
             return
         keys = self.map_names[name]
         if pressed:
@@ -3203,8 +3264,6 @@ class UnderSteer:
         import evdev
         telem = RateLimitedLogger(min_interval_ms=5000, min_delta=100)
         latest = defaultdict(lambda: 0)
-        now = time.monotonic()
-        self._last_alive_ts = now
         
         # 可能なら初期値を一度読む
         try:
@@ -3215,6 +3274,7 @@ class UnderSteer:
         except Exception:
             pass
 
+
         print(f"[LoopStart(Rd] : <{src_tag}>")
         async for ev in src.async_read_loop():
             hat_name = None
@@ -3222,27 +3282,12 @@ class UnderSteer:
             if ev.type == ecodes.EV_ABS:
                 if ev.code in (ecodes.ABS_HAT0X, ecodes.ABS_HAT0Y, ecodes.ABS_HAT1X, ecodes.ABS_HAT1Y):
                     hat_name = self._hat_dir_name(ev.code, int(ev.value))
-
-            # 軸は常に最新を送り続ける（PrjCars2対応？）
-            # / keepalive
-            """
-            self._axis_cache[ecodes.ABS_X] = 0
-            self._axis_cache[ecodes.ABS_Y] = 0
-            self._axis_cache[ecodes.ABS_Z] = 0
-            self._axis_cache[ecodes.ABS_RZ] = 0
-            """
-            now = time.monotonic()
-            if now - self._last_alive_ts >= 0.016:  # ~60Hz（16ms）
-                for code, val in self._axis_cache.items():  # 直近の値を保持しておく
-                    self.ui.emit(E.EV_ABS, code, val)
-                self._last_alive_ts = now
-
-            # For Logging Only
+            
+            # For Logging
             if ev.type == evdev.ecodes.EV_ABS:
                 # 最新値の更新
                 for name, code in ABS.items():
                     if ev.code == code:
-                        self._axis_cache[ev.code] = ev.value
                         latest[name] = ev.value
                         break
 
@@ -3264,7 +3309,6 @@ class UnderSteer:
                         snapshot["steer"], snapshot["thr"], snapshot["brk"], snapshot["clt"],
                     )
 
-            #time.sleep(0.002)
             # 押したボタン名のエコー（TSV作成補助）
             if self.echo_buttons and ev.type == ecodes.EV_KEY and ev.value == 1:
                 name = code_to_name(ev.code)
@@ -3334,11 +3378,10 @@ class UnderSteer:
                     flg = True
                     # キーのマップがあれば、キーのみに送る
                     if self.keymap and ev.code in self.keymap.watch_codes:
-                        flg = False
+                        flg = False     # これは考えもの。。TDUSCではOK、両方押して欲しくない場合に必要な処理
                     # HAT 方向名のエコー（-1/0/1 の遷移を押下/解放として表示）
                     if self.keymap and hat_name in self.keymap.watch_names:
-                        #print("OK not emit:" + hat_name)
-                        self.ui.emit(ev.type, ev.code, 0)
+                        self.ui.emit(ev.type, ev.code, 0)   # TDUSCではOK、両方押して欲しくない場合に必要な処理
                         flg = False
                     if flg:
                         self.ui.emit(ev.type, ev.code, ev.value)
@@ -3350,9 +3393,10 @@ class UnderSteer:
             else:
                 # その他は無視（EV_MSC, EV_REL など）
                 pass
+            # ここいらない気がする
             # 一通り終わったよ的な通知を出す
-            self.ui.syn()
-
+            #self.ui.syn()
+            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
 
     def _write_ff(self, wheel_dev, t, c, v):
         try:
@@ -3377,7 +3421,7 @@ class UnderSteer:
                 try:
                     dev.grab()
                     grabbed = True
-                    print("grabbed: %s", tag)
+                    print(f"grabbed: {tag}")
                 except Exception as e:
                     # grab 不可でも実運用では続行したいケースが多い
                     logging.warning("grab failed (%s): %s", tag, e)
@@ -3506,7 +3550,7 @@ class UnderSteer:
         """
         from evdev import ecodes
 
-        print("ここは使ってない")
+        logging.error("ここは使ってない")
         if ev.type != ecodes.EV_FF:
             return None
 
@@ -3553,12 +3597,12 @@ def clear_ff_effects(dev, max_id=64):
         try:
             #fcntl.ioctl(dev.fd, EVIOCRMFF, struct.pack('i', eid))
             fcntl.ioctl(dev.fd, EVIOCRMFF, eid, False)          # ← これでOK
-            print(f"[FFB] Cleared effect id={eid}")
+            logging.debug(f"[FFB] Cleared effect id={eid}")
             cleared += 1
         except OSError:
             # 削除できない（未使用 or invalid）場合はスルー
             pass
-    print(f"[FFB] Cleared total {cleared} effect slots")
+    logging.info(f"[FFB] Cleared total {cleared} effect slots")
     return cleared
 
 
@@ -3659,7 +3703,7 @@ def list_button_names(devinfo, label):
         uniq = sorted(set(names))
         print(f"[i] {label}: buttons={len(uniq)} → {', '.join(uniq)}")
     except Exception as e:
-        print(f"[i] {label}: failed to enumerate buttons ({e})")
+        logging.error(f"[i] {label}: failed to enumerate buttons ({e})")
 
 async def main():
     args = build_argparser().parse_args()
@@ -3676,9 +3720,10 @@ async def main():
     elif verb == 2:
         log_level = logging.DEBUG
     elif verb == 1:
-        log_level = logging.INFO
+        log_level = logging.WARNING
     else:
-        log_level = logging.ERROR
+        #log_level = logging.ERROR
+        log_level = logging.INFO
     setup_logger(
         level=log_level,
         datefmt="%H:%M:%S",
