@@ -56,7 +56,7 @@ echo "5) Forza Horizon 5                        (FFB OK)"
 echo "6) Euro Truck                             (FFB OK)"
 
 echo "11) Asseto Corsa           (FFB cannot? 未チェック)"
-echo "12) Dirt Rally             (未対応effect: FRICTION(84) )"
+echo "12) Dirt Rally             (未チェック)"
 echo ""
 echo "Please Select.. (case sensitive)"
 read sel

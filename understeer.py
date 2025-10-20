@@ -1948,23 +1948,7 @@ class UInputFFDevice:
             t0 = time.perf_counter_ns()
             #evs = p.poll(LoopWait_ms)
             dt_ms = (time.perf_counter_ns() - t0) / 1e6
-            #if not evs:
-            #    if self.us.DEBUG_TELEMETORY:
-            #        logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
-            #    write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
-            #    time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
-            #    continue
-            # revents を可視化
-            #for fd, re in evs:
-            #    if self.us.DEBUG_TELEMETORY:
-            #        logging.debug(f"[POLL] dt={dt_ms:.3f} ms revents=0x{re:02x} "
-            #                  f"(IN={bool(re & select.POLLIN)} ERR={bool(re & select.POLLERR)} HUP={bool(re & select.POLLHUP)})")
-            # HUP/ERR は“粘着”するので、見つけたら即終了orリセット
-            #if any(re & (select.POLLERR | select.POLLHUP) for _, re in evs):
-            #    logging.error("[ERROR/POLL] ERR/HUP detected on uinput; stopping ff server loop")
-            #    break
-            #write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
-            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+
             if self.us.DEBUG_TELEMETORY:
                 logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
             # ここで “完全に” ドレインする（未処理を残さない）
@@ -1977,14 +1961,6 @@ class UInputFFDevice:
                     break
 
                 flgSkip = False
-                """
-                if drained > 0 and up.request_id == 0:
-                    # Skip して、ドレインループを一旦抜ける。
-                    logging.warning("Pys / UI_BEGIN_FF_UPLOAD: Pys-Up Skkiped")
-                    up.retval = 0
-                    flgSkip = True
-                """
-
                 if kind == "UPLOAD":
                     up = obj    # UP オブジェクト
                     eff_t  = int(up.effect.type)
@@ -2261,7 +2237,26 @@ class UInputFFDevice:
                 up.effect.id = int(virt_id)
                 up.retval = 0
                 # 共通処理ここまで
+
+            elif eff.type == ecodes.FF_FRICTION:
+                logging.debug(f"[FFB-Pys(UP)] effect= {FfEvioMapper._ff_type_name(eff.type)} ")
+                self._effect_types[int(eff.id)] = ecodes.FF_FRICTION
                 
+                # FF_SPRING , FF_DAMPER の場合 safe_eff 利用
+                # ユニオンに入ってきたものを “安全に 2 軸初期化済み condition[2]” に組み直す
+                safe_eff = _build_condition_pair_from_generic(t, eff)
+                eff = safe_eff
+
+                # 共通処理ここから
+                new_phys_id = self.ff_mapper.upload_ff_effect_via_eviocsff(self.phys_fd, eff)
+                # 3) マップ更新（virt→phys, phys→virt）
+                self.ff_mapper._virt2phys[virt_id] = new_phys_id
+                self.ff_mapper._phys2virt[new_phys_id] = virt_id
+                logging.debug(f"[FFB-Pys(UP)] {FfEvioMapper._ff_type_name(eff.type)} to physical: id={new_phys_id}")
+                up.effect.id = int(virt_id)
+                up.retval = 0
+                # 共通処理ここまで
+
             elif int(eff.type) == ecodes.FF_RUMBLE:
                 logging.debug(f"[FFB-Pys(UP)] effect= {FfEvioMapper._ff_type_name(eff.type)} ")
                 self._effect_types[int(eff.id)] = ecodes.FF_RUMBLE
@@ -2929,6 +2924,7 @@ def merge_capabilities(
     wheel: InputDevice, shifter: InputDevice,
     force_keys: Optional[List[int]] = None,
     expose_ff: bool = False,
+    ignore_ffb: str = None,
     ff_off: bool = False,
     us = None,
 ) -> Tuple[Dict[int, List], Dict[int, AbsInfo]]:
@@ -2944,6 +2940,9 @@ def merge_capabilities(
 
     keys: Set[int] = set()
     abs_list: Dict[int, AbsInfo] = {}
+    ignoreArr = ignore_ffb.strip().split(",")
+    #print("てすと")
+    #print(ignoreArr)
 
     def take_abs(source):
         abs_caps = source.get(ecodes.EV_ABS, [])
@@ -2977,10 +2976,13 @@ def merge_capabilities(
         # evdev の返し方が環境で異なるので flatten
         ff_features_set: Set[int] = set()
         for item in cap_w_ff:
-            if isinstance(item, (list, tuple)):
-                ff_features_set.update(item)
+            if str(item) in ignoreArr:
+                pass
             else:
-                ff_features_set.add(item)
+                if isinstance(item, (list, tuple)):
+                    ff_features_set.update(item)
+                else:
+                    ff_features_set.add(item)
         """
         if not ff_features_set:
             ff_features_set = {
@@ -3138,6 +3140,15 @@ class UnderSteer:
         self.ff_passthrough_easy = ff_passthrough_easy
         if ff_passthrough_easy:
             self.ff_passthrough = True
+        # 文字列想定
+        if args.ignore_ffb:
+            self.ignore_ffb = args.ignore_ffb
+        else:
+            self.ignore_ffb = "0"
+        
+        #print("以下FFB無視")
+        #print(self.ignore_ffb)
+        
         # for FFB Upload
         self.ff_worker: Optional["AsyncFFBProxy"] = None
         self.ff_cache_sig: Dict[Tuple[str, int], int] = {}  # (type, hash)->effect_id
@@ -3173,6 +3184,7 @@ class UnderSteer:
             wheel.dev, shifter.dev,
             force_keys=force_keys,
             expose_ff=self.ff_passthrough,
+            ignore_ffb=self.ignore_ffb,
             ff_off=(args.ff_off if args else False),
             us=self,
         )
@@ -3645,6 +3657,7 @@ def build_argparser():
                    help="FF_GAIN / FF_AUTOCENTER を物理 wheel へパススルー")
     p.add_argument("--ff-pass-through", action="store_true",
                    help="FFB Command を物理 wheel へ転送")
+    p.add_argument("--ignore-ffb", help="Ignore FFB Effect No.")
     p.add_argument("--no-grab", action="store_true", help="物理デバイスを grab しない")
     p.add_argument("--gear-map", help="ギア定義ファイルのパス（ボタン名一覧）を指定すると標準ギア出力を合成（G1..G8→BTN_0..BTN_7、N→BTN_DEAD）")
     p.add_argument("--keymap", help="ボタン→キーストロークのTSVファイル")

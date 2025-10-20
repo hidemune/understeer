@@ -76,6 +76,24 @@ Linux 向けツールです。
 | Proton | GE-Proton10-10                                  |
 | Python | 3.13+                                           |
 
+
+
+## ⚙️ FFB 動かない時の対策（Dirt Rally など）
+
+### ✅ SDLをevdev強制モードにする
+
+以下の環境変数を指定して Steam / Dirt Rally を起動：
+
+```
+SDL_GAMECONTROLLER_IGNORE_DEVICES=0
+SDL_HIDAPI_JOYSTICK=0
+```
+
+これで HIDAPI を無効化し、`/dev/input/eventX` 経由の EV_FF を使わせます。
+ （多くのゲームではこれで有効になります）
+
+
+
 ---
 
 ### 🧠 開発者コメント
@@ -144,6 +162,24 @@ it achieves *smooth and non-blocking feedback*, even in demanding titles like Pr
 | Games     | rFactor2 / Project CARS 2 / Assetto Corsa |
 | Proton    | GE-Proton10-10                            |
 | Python    | 3.13+                                     |
+
+
+
+## ⚙️ Solutions for when FFB doesn't work (Dirt Rally, etc.)
+
+### ✅ Force SDL to use EVDEV mode
+
+Launch Steam / Dirt Rally with the following environment variables:
+
+```
+SDL_GAMECONTROLLER_IGNORE_DEVICES=0
+SDL_HIDAPI_JOYSTICK=0
+```
+
+This will disable HIDAPI and force EV_FF via `/dev/input/eventX`.
+(This will work for most games.)
+
+
 
 ---
 

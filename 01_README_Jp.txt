@@ -170,3 +170,24 @@ OK★　: FF_RUMBLE
 【作った人】
 
 田中　秀宗 / Hidemune TANAKA
+
+
+
+
+
+
+
+
+
+## ⚙️ Dirt Rally 対策（FFB効かないやつ向け）
+
+### ✅ 方式1: SDLをevdev強制モードにする
+
+以下の環境変数を追加で指定して Steam / Dirt Rally を起動：
+
+```
+ SDL_GAMECONTROLLER_IGNORE_DEVICES=0 SDL_HIDAPI_JOYSTICK=0 
+```
+
+これで HIDAPI を無効化し、`/dev/input/eventX` 経由の EV_FF を使わせます。
+ （多くのゲームではこれで有効になります）
