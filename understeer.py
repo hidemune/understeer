@@ -3389,7 +3389,7 @@ class UnderSteer:
                     if self.keymap and hat_name in self.keymap.watch_names:
                         # TDUSCではOK、両方押して欲しくない場合に必要な処理
                         if GearMapper.neutralFlg:
-                            self.ui.emit(ev.type, ev.code, 0)   
+                            #self.ui.emit(ev.type, ev.code, 0)   
                             flg = False
                     if flg:
                         self.ui.emit(ev.type, ev.code, ev.value)
