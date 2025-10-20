@@ -60,7 +60,7 @@ $ sudo udevadm control --reload && sudo udevadm trigger
 [Settings required for each Steam game]
 Set the following in Steam's launch options.
 
-SDL_GAMECONTROLLER_IGNORE_DEVICES=${joined} SDL_HIDAPI_IGNORE_DEVICES=${joined} %command%
+SDL_GAMECONTROLLER_IGNORE_DEVICES=0 SDL_HIDAPI_JOYSTICK=0 SDL_GAMECONTROLLER_IGNORE_DEVICES=${joined} SDL_HIDAPI_IGNORE_DEVICES=${joined} %command%
 
 ...
 EOS
