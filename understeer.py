@@ -2563,6 +2563,9 @@ class GearMapper:
     ]
     STD_NEUTRAL = ecodes.BTN_DEAD
 
+    # ニュートラルフラグ（HAT-Keyboard連携用）
+    neutralFlg = True
+
     def __init__(self, path: Path):
         self.path = path
         # gear_requirements[i] = set of input key codes for Gi (i:0..7)
@@ -2678,6 +2681,7 @@ class GearMapper:
                 neutral = self.input_pressed.get(self.neutral_button, False)
             else:
                 neutral = True  # どのギア条件も満たさない＝ニュートラル
+        GearMapper.neutralFlg = neutral
 
         # 目標出力状態を作る
         desired: Dict[int, bool] = {c: False for c in self.out_pressed.keys()}
@@ -3379,10 +3383,14 @@ class UnderSteer:
                     # キーのマップがあれば、キーのみに送る
                     if self.keymap and ev.code in self.keymap.watch_codes:
                         flg = False     # これは考えもの。。TDUSCではOK、両方押して欲しくない場合に必要な処理
+                    # 。。。TDUでウインカー出そうとして、ハンドル取られる。この修正はキャンセル。
+                    # ニュートラルの時だけ、ハットを送らないでキーボードのみ、で試してみる
                     # HAT 方向名のエコー（-1/0/1 の遷移を押下/解放として表示）
                     if self.keymap and hat_name in self.keymap.watch_names:
-                        self.ui.emit(ev.type, ev.code, 0)   # TDUSCではOK、両方押して欲しくない場合に必要な処理
-                        flg = False
+                        # TDUSCではOK、両方押して欲しくない場合に必要な処理
+                        if GearMapper.neutralFlg:
+                            self.ui.emit(ev.type, ev.code, 0)   
+                            flg = False
                     if flg:
                         self.ui.emit(ev.type, ev.code, ev.value)
             elif ev.type == ecodes.EV_FF:
