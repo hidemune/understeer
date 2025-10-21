@@ -1643,15 +1643,11 @@ class UInputFFDevice:
         self._last_const_key = None
         self._last_const_ts = None
         
-        self._threads = set()
-        self._ff_srv_stop = threading.Event()
-        self._install_waker()      # ← (P2) 起床用pipe
-        self._install_signals()    # ← (P3) SIGINT/SIGTERMで止める
-        self._start_watchdog(stall_sec=5.0)  # ← (P4) フリーズ検出
-
         self.ui_base_fd = ui_base_fd
         self.ui_base_path = ui_base_path
         self.loop = loop
+        setup_signal_handlers(self.loop, us)
+        
         self.ff_mapper: Optional[FfEvioMapper] = ff_mapper if ff_mapper is not None else FfEvioMapper()
         self.us = us
         
@@ -1840,17 +1836,6 @@ class UInputFFDevice:
 
     def stop(self):
         self._ff_srv_stop.set()
-        self._wake()          # ← poll を即起床させる
-
-    def _install_signals(self):
-        def _graceful(sig, frm):
-            try:
-                self.stop()               # set() + wake()
-            finally:
-                try: os.close(self.ui_base_fd) # ← これでpoll/ioctlがEPIPE/HUPで抜ける
-                except OSError: pass
-        signal.signal(signal.SIGINT, _graceful)
-        signal.signal(signal.SIGTERM, _graceful)
 
     def shutdown(self, timeout=2.0):
         self.stop()
@@ -3303,133 +3288,142 @@ class UnderSteer:
         except Exception:
             pass
 
+        try:
+            print(f"[LoopStart(Rd] : <{src_tag}>")
+            async for ev in src.async_read_loop():
+                hat_name = None
+                # HAT 方向名（-1/0/1 の遷移を押下/解放として管理）
+                if ev.type == ecodes.EV_ABS:
+                    if ev.code in (ecodes.ABS_HAT0X, ecodes.ABS_HAT0Y, ecodes.ABS_HAT1X, ecodes.ABS_HAT1Y):
+                        hat_name = self._hat_dir_name(ev.code, int(ev.value))
+                
+                # For Logging
+                if ev.type == evdev.ecodes.EV_ABS:
+                    # 最新値の更新
+                    for name, code in ABS.items():
+                        if ev.code == code:
+                            latest[name] = ev.value
+                            break
 
-        print(f"[LoopStart(Rd] : <{src_tag}>")
-        async for ev in src.async_read_loop():
-            hat_name = None
-            # HAT 方向名（-1/0/1 の遷移を押下/解放として管理）
-            if ev.type == ecodes.EV_ABS:
-                if ev.code in (ecodes.ABS_HAT0X, ecodes.ABS_HAT0Y, ecodes.ABS_HAT1X, ecodes.ABS_HAT1Y):
-                    hat_name = self._hat_dir_name(ev.code, int(ev.value))
-            
-            # For Logging
-            if ev.type == evdev.ecodes.EV_ABS:
-                # 最新値の更新
-                for name, code in ABS.items():
-                    if ev.code == code:
-                        latest[name] = ev.value
-                        break
+                if self.DEBUG_TELEMETORY:
+                    # ★ 定期/変化時テレメトリ出力（軽量）
+                    snapshot = {
+                        "steer": latest["steer"],
+                        "thr": latest["throttle"],
+                        "brk": latest["brake"],
+                        "clt": latest["clutch"],
+                        # ついでに内部状態を少し：キュー長やFFスロット利用状況など
+                        "q": getattr(self, "_ev_queue_size", 0),
+                        "ff_used": getattr(self, "_phys_ff_used", -1),   # 任意: 実装に合わせて更新
+                        "ff_cap": getattr(self, "_phys_ff_cap", -1),
+                    }
+                    if telem.should_emit(snapshot):
+                        logging.debug(
+                            "[TEL] steer=%6d thr=%5d brk=%5d clt=%5d",
+                            snapshot["steer"], snapshot["thr"], snapshot["brk"], snapshot["clt"],
+                        )
 
-            if self.DEBUG_TELEMETORY:
-                # ★ 定期/変化時テレメトリ出力（軽量）
-                snapshot = {
-                    "steer": latest["steer"],
-                    "thr": latest["throttle"],
-                    "brk": latest["brake"],
-                    "clt": latest["clutch"],
-                    # ついでに内部状態を少し：キュー長やFFスロット利用状況など
-                    "q": getattr(self, "_ev_queue_size", 0),
-                    "ff_used": getattr(self, "_phys_ff_used", -1),   # 任意: 実装に合わせて更新
-                    "ff_cap": getattr(self, "_phys_ff_cap", -1),
-                }
-                if telem.should_emit(snapshot):
-                    logging.debug(
-                        "[TEL] steer=%6d thr=%5d brk=%5d clt=%5d",
-                        snapshot["steer"], snapshot["thr"], snapshot["brk"], snapshot["clt"],
-                    )
+                # 押したボタン名のエコー（TSV作成補助）
+                if self.echo_buttons and ev.type == ecodes.EV_KEY and ev.value == 1:
+                    name = code_to_name(ev.code)
+                    print(f"[tap][{src_tag}] {name} ({ev.code})", flush=True)
+                    if self.echo_buttons_tsv:
+                        # そのまま keymap の素材にできるようタブ区切りテンプレ行も出す
+                        print(f"{name}\tKEY_???", flush=True)
+                # HAT 方向名（-1/0/1 の遷移を押下/解放）
+                if ev.type == ecodes.EV_ABS:
+                    if ev.code in (ecodes.ABS_HAT0X, ecodes.ABS_HAT0Y) or \
+                      hasattr(ecodes, "ABS_HAT1X") and ev.code in (ecodes.ABS_HAT1X, ecodes.ABS_HAT1Y):
+                        key = (src_tag, ev.code)
+                        prev = self._hat_state.get(key, 0)
+                        cur = int(ev.value)
+                        # 例: 0→1 で RIGHT 押下, 1→0 で RIGHT 解放, -1→1 は LEFT解放→RIGHT押下
+                        # まず前の方向を解放
+                        if prev != 0:
+                            prev_name = self._hat_dir_name(ev.code, prev)
+                            if prev_name:
+                                if self.echo_buttons:
+                                    print(f"[tap][{src_tag}] {prev_name} (release)", flush=True)
+                                if self.echo_buttons_tsv:
+                                    print(f"{prev_name}\tKEY_???", flush=True)
+                                if self.keymap and prev_name in self.keymap.watch_names:
+                                    try:
+                                        self.keymap.handle_named(prev_name, False)
+                                    except Exception as e:
+                                        logging.error(f"[keymap] handle_named(release,{prev_name}) failed: {e}")
 
-            # 押したボタン名のエコー（TSV作成補助）
-            if self.echo_buttons and ev.type == ecodes.EV_KEY and ev.value == 1:
-                name = code_to_name(ev.code)
-                print(f"[tap][{src_tag}] {name} ({ev.code})", flush=True)
-                if self.echo_buttons_tsv:
-                    # そのまま keymap の素材にできるようタブ区切りテンプレ行も出す
-                    print(f"{name}\tKEY_???", flush=True)
-            # HAT 方向名（-1/0/1 の遷移を押下/解放）
-            if ev.type == ecodes.EV_ABS:
-                if ev.code in (ecodes.ABS_HAT0X, ecodes.ABS_HAT0Y) or \
-                  hasattr(ecodes, "ABS_HAT1X") and ev.code in (ecodes.ABS_HAT1X, ecodes.ABS_HAT1Y):
-                    key = (src_tag, ev.code)
-                    prev = self._hat_state.get(key, 0)
-                    cur = int(ev.value)
-                    # 例: 0→1 で RIGHT 押下, 1→0 で RIGHT 解放, -1→1 は LEFT解放→RIGHT押下
-                    # まず前の方向を解放
-                    if prev != 0:
-                        prev_name = self._hat_dir_name(ev.code, prev)
-                        if prev_name:
-                            if self.echo_buttons:
-                                print(f"[tap][{src_tag}] {prev_name} (release)", flush=True)
-                            if self.echo_buttons_tsv:
-                                print(f"{prev_name}\tKEY_???", flush=True)
-                            if self.keymap and prev_name in self.keymap.watch_names:
-                                try:
-                                    self.keymap.handle_named(prev_name, False)
-                                except Exception as e:
-                                    logging.error(f"[keymap] handle_named(release,{prev_name}) failed: {e}")
+                        # 次に新しい方向を押下
+                        if cur != 0:
+                            cur_name = self._hat_dir_name(ev.code, cur)
+                            if cur_name:
+                                if self.echo_buttons:
+                                    print(f"[tap][{src_tag}] {cur_name} (press)", flush=True)
+                                if self.echo_buttons_tsv:
+                                    print(f"{cur_name}\tKEY_???", flush=True)
+                                if self.keymap and cur_name in self.keymap.watch_names:
+                                    try:
+                                        self.keymap.handle_named(cur_name, True)
+                                    except Exception as e:
+                                        logging.error(f"[keymap] handle_named(press,{cur_name}) failed: {e}")
+                        self._hat_state[key] = cur
 
-                    # 次に新しい方向を押下
-                    if cur != 0:
-                        cur_name = self._hat_dir_name(ev.code, cur)
-                        if cur_name:
-                            if self.echo_buttons:
-                                print(f"[tap][{src_tag}] {cur_name} (press)", flush=True)
-                            if self.echo_buttons_tsv:
-                                print(f"{cur_name}\tKEY_???", flush=True)
-                            if self.keymap and cur_name in self.keymap.watch_names:
-                                try:
-                                    self.keymap.handle_named(cur_name, True)
-                                except Exception as e:
-                                    logging.error(f"[keymap] handle_named(press,{cur_name}) failed: {e}")
-                    self._hat_state[key] = cur
+                # キーボード送出（TSV）: 対象元（wheel/shift/both）と EV_KEY のみ処理
+                if (self.keymap and ev.type == ecodes.EV_KEY and (self.keymap_source == "both" or self.keymap_source == src_tag)):
+                    if ev.code in self.keymap.watch_codes:
+                        try:
+                            self.keymap.handle_src_event(ev.code, ev.value)
+                        except Exception as e:
+                            logging.error(f"[keymap] handle_src_event failed for code={ev.code}, val={ev.value}: {e}")
 
-            # キーボード送出（TSV）: 対象元（wheel/shift/both）と EV_KEY のみ処理
-            if (self.keymap and ev.type == ecodes.EV_KEY and (self.keymap_source == "both" or self.keymap_source == src_tag)):
-                if ev.code in self.keymap.watch_codes:
-                    try:
-                        self.keymap.handle_src_event(ev.code, ev.value)
-                    except Exception as e:
-                        logging.error(f"[keymap] handle_src_event failed for code={ev.code}, val={ev.value}: {e}")
-
-            if ev.type in (ecodes.EV_ABS, ecodes.EV_KEY):
-                if src_tag == "shift" and self.gear_mapper and ev.type == ecodes.EV_KEY:
-                    # ギア関連キーであれば吸収 → 標準化出力に置換
-                    changed = self.gear_mapper.feed_input_key(ev.code, ev.value)
-                    # “ギア定義に含まれるキー”は素通し抑止
-                    if ev.code in self.gear_mapper.watch_codes:
-                        if changed:
-                            self.gear_mapper.emit_to(self.ui)
-                        # ここでは元イベントは流さない
+                if ev.type in (ecodes.EV_ABS, ecodes.EV_KEY):
+                    if src_tag == "shift" and self.gear_mapper and ev.type == ecodes.EV_KEY:
+                        # ギア関連キーであれば吸収 → 標準化出力に置換
+                        changed = self.gear_mapper.feed_input_key(ev.code, ev.value)
+                        # “ギア定義に含まれるキー”は素通し抑止
+                        if ev.code in self.gear_mapper.watch_codes:
+                            if changed:
+                                self.gear_mapper.emit_to(self.ui)
+                            # ここでは元イベントは流さない
+                        else:
+                            # ギア無関係のキーはそのまま流す
+                            self.ui.emit(ev.type, ev.code, ev.value)
                     else:
-                        # ギア無関係のキーはそのまま流す
-                        self.ui.emit(ev.type, ev.code, ev.value)
+                        # Wheel
+                        flg = True
+                        # キーのマップがあれば、キーのみに送る
+                        if self.keymap and ev.code in self.keymap.watch_codes:
+                            flg = False     # これは考えもの。。TDUSCではOK、両方押して欲しくない場合に必要な処理
+                        # 。。。TDUでウインカー出そうとして、ハンドル取られる。この修正はキャンセル。
+                        # ニュートラルの時だけ、ハットを送らないでキーボードのみ、で試してみる
+                        # HAT 方向名のエコー（-1/0/1 の遷移を押下/解放として表示）
+                        if self.keymap and hat_name in self.keymap.watch_names:
+                            # TDUSCではOK、両方押して欲しくない場合に必要な処理
+                            if GearMapper.neutralFlg:
+                                #self.ui.emit(ev.type, ev.code, 0)   
+                                flg = False
+                        if flg:
+                            self.ui.emit(ev.type, ev.code, ev.value)
+                elif ev.type == ecodes.EV_FF:
+                    # 物理から FF が来るケースは稀だが一応無視
+                    pass
+                elif ev.type in (ecodes.EV_SYN,):
+                    pass
                 else:
-                    # Wheel
-                    flg = True
-                    # キーのマップがあれば、キーのみに送る
-                    if self.keymap and ev.code in self.keymap.watch_codes:
-                        flg = False     # これは考えもの。。TDUSCではOK、両方押して欲しくない場合に必要な処理
-                    # 。。。TDUでウインカー出そうとして、ハンドル取られる。この修正はキャンセル。
-                    # ニュートラルの時だけ、ハットを送らないでキーボードのみ、で試してみる
-                    # HAT 方向名のエコー（-1/0/1 の遷移を押下/解放として表示）
-                    if self.keymap and hat_name in self.keymap.watch_names:
-                        # TDUSCではOK、両方押して欲しくない場合に必要な処理
-                        if GearMapper.neutralFlg:
-                            #self.ui.emit(ev.type, ev.code, 0)   
-                            flg = False
-                    if flg:
-                        self.ui.emit(ev.type, ev.code, ev.value)
-            elif ev.type == ecodes.EV_FF:
-                # 物理から FF が来るケースは稀だが一応無視
+                    # その他は無視（EV_MSC, EV_REL など）
+                    pass
+                # Loop 完了したらここに来る
+                # 一通り終わったよ的な通知を出す
+                #self.ui.syn()
+                #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+        except asyncio.CancelledError:
+            # キャンセルで抜ける
+            raise
+        finally:
+            try:
+                src.close()       # これで read が確実に目を覚まして終わる
+            except Exception:
                 pass
-            elif ev.type in (ecodes.EV_SYN,):
-                pass
-            else:
-                # その他は無視（EV_MSC, EV_REL など）
-                pass
-            # Loop 完了したらここに来る
-            # 一通り終わったよ的な通知を出す
-            #self.ui.syn()
-            #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
+
 
     def _write_ff(self, wheel_dev, t, c, v):
         try:
@@ -3445,7 +3439,10 @@ class UnderSteer:
         logging.debug("async run: UnderSteer Start.")
         grabbed = False
         self._stop_ev = asyncio.Event()   # 明示停止フラグ（他所から set してもOK）
-
+        
+        loop = asyncio.get_running_loop()
+        setup_signal_handlers(loop, self)
+        self._tasks = []  # ここでタスクリストを保持
         
         no_grab = build_argparser().parse_args().no_grab
         # --- 物理入力の grab（失敗しても続行できるようにする） ---
@@ -3465,12 +3462,9 @@ class UnderSteer:
         try:
             async with asyncio.TaskGroup() as tg:
                 # 入力中継（wheel / shifter）
-                tg.create_task(self._pipe_events(self.wheel_info.dev, "wheel"))
-                tg.create_task(self._pipe_events(self.shifter_info.dev, "shift"))
-                #tg.create_task(self.ui._ff_srv_thr.start())
-                #tg.create_task(self.ui._ff_request_server_loop(self.ui))
-                # FFBミラー（ゲーム→物理） and FFB 入力取り込み
-                #tg.create_task(self._mirror_all_ff())
+                t1 = tg.create_task(self._pipe_events(self.wheel_info.dev, "wheel"))
+                t2 = tg.create_task(self._pipe_events(self.shifter_info.dev, "shift"))
+                self._tasks.extend([t1, t2])
                 # 明示停止が来るまで待つ（どれかが例外で落ちれば TaskGroup が伝播して抜ける）
                 await self._stop_ev.wait()
 
@@ -3483,6 +3477,7 @@ class UnderSteer:
             traceback.print_exc()
             # ここで return せず finally に抜けてクリーンアップ
         finally:
+            
             # --- 安全に締める ---
             # 1) UI close
             ui = getattr(self, "ui", None)
@@ -3507,6 +3502,7 @@ class UnderSteer:
                         logging.debug("ungrabbed: %s", tag)
                     except Exception:
                         pass
+
 
             # 4) ff_worker 停止
             if hasattr(self, "ff_worker") and self.ff_worker:
@@ -3739,6 +3735,26 @@ def list_button_names(devinfo, label):
     except Exception as e:
         logging.error(f"[i] {label}: failed to enumerate buttons ({e})")
 
+import signal
+
+# これを main() の最初の方に追加
+def setup_signal_handlers(loop, app):
+    def handle_sigterm():
+        print("[Signal] SIGTERM received -> graceful stop.")
+        app._stop_ev.set()
+        # TaskGroupのタスクを明示的にキャンセル（任意）
+        if hasattr(app, "_tasks"):
+            for t in list(app._tasks):
+                if not t.done():
+                    t.cancel()
+        try:
+            ### task.cancel()
+            app.ui.stop()
+        except Exception as e:
+            raise
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, handle_sigterm)
+
 async def main():
     args = build_argparser().parse_args()
     if args.no_grab:
@@ -3754,10 +3770,10 @@ async def main():
     elif verb == 2:
         log_level = logging.DEBUG
     elif verb == 1:
-        log_level = logging.WARNING
-    else:
-        #log_level = logging.ERROR
         log_level = logging.INFO
+    else:
+        log_level = logging.ERROR
+        #log_level = logging.INFO
     setup_logger(
         level=log_level,
         datefmt="%H:%M:%S",
@@ -3844,6 +3860,9 @@ async def main():
         args=args  # ← 引数を明示的に渡す！
     )
 
+    loop = asyncio.get_running_loop()
+    setup_signal_handlers(loop, app)
+
     # grab 無効なら掴まない
     if args.no_grab:
         try:
@@ -3857,12 +3876,10 @@ async def main():
         except Exception:
             pass
     
-    print("OK OK.")
-    
     try:
         await app.run()
     except KeyboardInterrupt:
-        print("\n[] CtrlC で終了")
+        print("\n[] Ctrl-C で終了")
     finally:
         try:
             if keymap:
