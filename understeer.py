@@ -2920,9 +2920,12 @@ def merge_capabilities(
     - EV_KEY: ボタン union
     - EV_FF : 仮想でも expose（最小限: FF_GAIN, FF_AUTOCENTER）※実験的
     """
+    zero_fuzz   = True
+    force_flat0 = True
+    
     cap_w = wheel.capabilities(absinfo=True)
     cap_s = shifter.capabilities(absinfo=True)
-
+    
     keys: Set[int] = set()
     abs_list: Dict[int, AbsInfo] = {}
     ignoreArr = ignore_ffb.strip().split(",")
@@ -2937,12 +2940,19 @@ def merge_capabilities(
                 cur = abs_list[code]
                 lo = min(cur.min, absinfo.min)
                 hi = max(cur.max, absinfo.max)
+                fuzz = 0 if zero_fuzz else max(cur.fuzz, absinfo.fuzz)
                 abs_list[code] = AbsInfo(value=0, min=lo, max=hi,
-                                          fuzz=max(cur.fuzz, absinfo.fuzz),
-                                          flat=max(cur.flat, absinfo.flat),
+                                          fuzz=fuzz,
+                                          flat=0,
                                           resolution=max(cur.resolution, absinfo.resolution))
             else:
-                abs_list[code] = absinfo
+                # 新規登録時も flat=0 / fuzz=0 に正規化
+                fuzz = 0 if zero_fuzz else ai.fuzz
+                flat = 0 if force_flat0 else absinfo.flat
+                abs_list[code] = AbsInfo(
+                    value=0, min=absinfo.min, max=absinfo.max,
+                    fuzz=fuzz, flat=flat, resolution=absinfo.resolution
+                )
 
     def take_keys(source):
         for code in source.get(ecodes.EV_KEY, []):
@@ -3330,48 +3340,52 @@ class UnderSteer:
                     if self.echo_buttons_tsv:
                         # そのまま keymap の素材にできるようタブ区切りテンプレ行も出す
                         print(f"{name}\tKEY_???", flush=True)
+
                 # HAT 方向名（-1/0/1 の遷移を押下/解放）
                 if ev.type == ecodes.EV_ABS:
                     if ev.code in (ecodes.ABS_HAT0X, ecodes.ABS_HAT0Y) or \
                       hasattr(ecodes, "ABS_HAT1X") and ev.code in (ecodes.ABS_HAT1X, ecodes.ABS_HAT1Y):
-                        key = (src_tag, ev.code)
-                        prev = self._hat_state.get(key, 0)
-                        cur = int(ev.value)
-                        # 例: 0→1 で RIGHT 押下, 1→0 で RIGHT 解放, -1→1 は LEFT解放→RIGHT押下
-                        # まず前の方向を解放
-                        if prev != 0:
-                            prev_name = self._hat_dir_name(ev.code, prev)
-                            if prev_name:
-                                if self.echo_buttons:
-                                    print(f"[tap][{src_tag}] {prev_name} (release)", flush=True)
-                                if self.echo_buttons_tsv:
-                                    print(f"{prev_name}\tKEY_???", flush=True)
-                                if self.keymap and prev_name in self.keymap.watch_names:
-                                    try:
-                                        self.keymap.handle_named(prev_name, False)
-                                    except Exception as e:
-                                        logging.error(f"[keymap] handle_named(release,{prev_name}) failed: {e}")
+                        # ニュートラルの時にしか、HATのキーボード「a,w,s,d」を送らない
+                        if GearMapper.neutralFlg:
+                            key = (src_tag, ev.code)
+                            prev = self._hat_state.get(key, 0)
+                            cur = int(ev.value)
+                            # 例: 0→1 で RIGHT 押下, 1→0 で RIGHT 解放, -1→1 は LEFT解放→RIGHT押下
+                            # まず前の方向を解放
+                            if prev != 0:
+                                prev_name = self._hat_dir_name(ev.code, prev)
+                                if prev_name:
+                                    if self.echo_buttons:
+                                        print(f"[tap][{src_tag}] {prev_name} (release)", flush=True)
+                                    if self.echo_buttons_tsv:
+                                        print(f"{prev_name}\tKEY_???", flush=True)
+                                    if self.keymap and prev_name in self.keymap.watch_names:
+                                        try:
+                                            self.keymap.handle_named(prev_name, False)
+                                        except Exception as e:
+                                            logging.error(f"[keymap] handle_named(release,{prev_name}) failed: {e}")
+                            # 次に新しい方向を押下
+                            if cur != 0:
+                                cur_name = self._hat_dir_name(ev.code, cur)
+                                if cur_name:
+                                    if self.echo_buttons:
+                                        print(f"[tap][{src_tag}] {cur_name} (press)", flush=True)
+                                    if self.echo_buttons_tsv:
+                                        print(f"{cur_name}\tKEY_???", flush=True)
+                                    if self.keymap and cur_name in self.keymap.watch_names:
+                                        try:
+                                            self.keymap.handle_named(cur_name, True)
+                                        except Exception as e:
+                                            logging.error(f"[keymap] handle_named(press,{cur_name}) failed: {e}")
+                            self._hat_state[key] = cur
 
-                        # 次に新しい方向を押下
-                        if cur != 0:
-                            cur_name = self._hat_dir_name(ev.code, cur)
-                            if cur_name:
-                                if self.echo_buttons:
-                                    print(f"[tap][{src_tag}] {cur_name} (press)", flush=True)
-                                if self.echo_buttons_tsv:
-                                    print(f"{cur_name}\tKEY_???", flush=True)
-                                if self.keymap and cur_name in self.keymap.watch_names:
-                                    try:
-                                        self.keymap.handle_named(cur_name, True)
-                                    except Exception as e:
-                                        logging.error(f"[keymap] handle_named(press,{cur_name}) failed: {e}")
-                        self._hat_state[key] = cur
-
+                noSendKey = False
                 # キーボード送出（TSV）: 対象元（wheel/shift/both）と EV_KEY のみ処理
                 if (self.keymap and ev.type == ecodes.EV_KEY and (self.keymap_source == "both" or self.keymap_source == src_tag)):
                     if ev.code in self.keymap.watch_codes:
                         try:
                             self.keymap.handle_src_event(ev.code, ev.value)
+                            noSendKey = True
                         except Exception as e:
                             logging.error(f"[keymap] handle_src_event failed for code={ev.code}, val={ev.value}: {e}")
 
@@ -3388,20 +3402,8 @@ class UnderSteer:
                             # ギア無関係のキーはそのまま流す
                             self.ui.emit(ev.type, ev.code, ev.value)
                     else:
-                        # Wheel
-                        flg = True
-                        # キーのマップがあれば、キーのみに送る
-                        if self.keymap and ev.code in self.keymap.watch_codes:
-                            flg = False     # これは考えもの。。TDUSCではOK、両方押して欲しくない場合に必要な処理
-                        # 。。。TDUでウインカー出そうとして、ハンドル取られる。この修正はキャンセル。
-                        # ニュートラルの時だけ、ハットを送らないでキーボードのみ、で試してみる
-                        # HAT 方向名のエコー（-1/0/1 の遷移を押下/解放として表示）
-                        if self.keymap and hat_name in self.keymap.watch_names:
-                            # TDUSCではOK、両方押して欲しくない場合に必要な処理
-                            if GearMapper.neutralFlg:
-                                #self.ui.emit(ev.type, ev.code, 0)   
-                                flg = False
-                        if flg:
+                        # Wheel もしキー送出なら本体のは送らない
+                        if not noSendKey:
                             self.ui.emit(ev.type, ev.code, ev.value)
                 elif ev.type == ecodes.EV_FF:
                     # 物理から FF が来るケースは稀だが一応無視

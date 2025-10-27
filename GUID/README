@@ -1,0 +1,8 @@
+sudo apt install -y libsdl2-dev   # ← pip不要、開発ヘッダのみ
+gcc -o sdl-guid sdl_guid.c $(pkg-config --cflags --libs sdl2)
+./sdl-guid
+
+
+
+#   name="UnderSteer FFB Wheel-Shifter" guid=0300.... の guid= を控えてください。
+#   （UnderSteer を起動した状態で実行すると確実です）

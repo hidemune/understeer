@@ -79,6 +79,7 @@ echo "5) Asseto Corsa                           (FFB OK)"
 echo "11) Euro Truck                            (FFB OK)"
 echo "12) Dirt Rally                            (FFB OK)"
 echo "13) City Car Driving                      (未チェック)"
+echo "14) Testing now...                        (未チェック)"
 echo ""
 echo "Please Select.. (case sensitive)"
 read sel
@@ -152,6 +153,21 @@ if [ "$sel" = "13" ]; then
   sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode  
 fi
 
+if [ "$sel" = "14" ]; then
+  echo "# 1190000 # Test"
+  flg="T"; minimize_self
+
+#GUID の取り方（どちらか）
+#・Steamログを見る：~/.steam/steam/logs/controller.txt に Added ... GUID 03000000... が出ます
+#・SDLツール：controllermap 0 などを使うと、最後に GUID と雛形が出力されます
+#※ GUID は 必ず実際の値に置き換えてください（これが違うと丸ごと無視されます）。
+export SDL_GAMECONTROLLERCONFIG="030039c76d0400004fc2000000010000,UnderSteer Virtual Wheel,leftx:a0,lefty:a1,rightx:a2,righty:a3,lt:a4,rt:a5,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,a:b0,b:b1,x:b2,y:b3,back:b6,start:b7,guide:b8,lb:b5,rb:b6,leftstick:b9,rightstick:b10,platform:Linux,"
+  steam steam://rungameid/1190000 >/dev/null 2>&1 &
+  # --gear-map gears.dat        ニュートラル入力が別途必要な場合に指定
+  # Xbox360 Controller
+  #sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode  
+  sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode --vid 0x045e --pid 0x028e --vname b"Xbox 360 Controller" 
+fi
 
 
 # -------------------
