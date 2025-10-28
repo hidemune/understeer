@@ -1642,6 +1642,7 @@ class UInputFFDevice:
         """
         self._last_const_key = None
         self._last_const_ts = None
+        self.ui_caps = ui_caps
         
         self.ui_base_fd = ui_base_fd
         self.ui_base_path = ui_base_path
@@ -2929,30 +2930,60 @@ def merge_capabilities(
     keys: Set[int] = set()
     abs_list: Dict[int, AbsInfo] = {}
     ignoreArr = ignore_ffb.strip().split(",")
+    
+    us.register_abs_mapping_first_win("wheel", cap_w)
+    us.register_abs_mapping_first_win("shift", cap_s)
+    
     #print("てすと")
     #print(ignoreArr)
-
+    w_abs_list = []
+    
     def take_abs(source):
         abs_caps = source.get(ecodes.EV_ABS, [])
         for code, absinfo in abs_caps:
-            # すでにある場合はレンジを広い方に拡張
+            w_abs_list.append(ecodes.ABS[code])
+            # すでにある場合は先勝ちで何もしない
             if code in abs_list:
+                pass
+                """
                 cur = abs_list[code]
                 lo = min(cur.min, absinfo.min)
                 hi = max(cur.max, absinfo.max)
                 fuzz = 0 if zero_fuzz else max(cur.fuzz, absinfo.fuzz)
+                flat = 0 if force_flat0 else absinfo.flat
+                dst_min, dst_max = absinfo.min, absinfo.max
+                mul = 1
+                # 物理が -1..1（または 0..1）の「正規化済み」軸なら仮想側で 16bit レンジへ拡大
+                if absinfo.min == -1 and absinfo.max == 1:
+                    dst_min, dst_max, mul = -32767, 32767, 32767
+                elif absinfo.min == 0 and absinfo.max == 1:
+                    dst_min, dst_max, mul = 0, 32767, 32767
                 abs_list[code] = AbsInfo(value=0, min=lo, max=hi,
                                           fuzz=fuzz,
                                           flat=0,
                                           resolution=max(cur.resolution, absinfo.resolution))
+                # 後段のイベント拡大用メモ
+                if us is not None and mul != 1:
+                    us._axis_scale[code] = (absinfo.min, absinfo.max, mul)
+                """
             else:
                 # 新規登録時も flat=0 / fuzz=0 に正規化
-                fuzz = 0 if zero_fuzz else ai.fuzz
+                fuzz = 0 if zero_fuzz else absinfo.fuzz
                 flat = 0 if force_flat0 else absinfo.flat
+                dst_min, dst_max = absinfo.min, absinfo.max
+                mul = 1
+                # 物理が -1..1（または 0..1）の「正規化済み」軸なら仮想側で 16bit レンジへ拡大
+                if absinfo.min == -1 and absinfo.max == 1:
+                    dst_min, dst_max, mul = -32767, 32767, 32767
+                elif absinfo.min == 0 and absinfo.max == 1:
+                    dst_min, dst_max, mul = 0, 32767, 32767
                 abs_list[code] = AbsInfo(
-                    value=0, min=absinfo.min, max=absinfo.max,
+                    value=0, min=dst_min, max=dst_max,
                     fuzz=fuzz, flat=flat, resolution=absinfo.resolution
                 )
+                # 後段のイベント拡大用メモ
+                if us is not None and mul != 1:
+                    us._axis_scale[code] = (absinfo.min, absinfo.max, mul)
 
     def take_keys(source):
         for code in source.get(ecodes.EV_KEY, []):
@@ -2963,6 +2994,9 @@ def merge_capabilities(
 
     take_abs(cap_w); take_abs(cap_s)
     take_keys(cap_w); take_keys(cap_s)
+
+    uniq = sorted(set(w_abs_list))
+    print(f"[i] uniq: axes={len(uniq)} → {', '.join(uniq)}")
 
     # FFB: --ff-pass-through のときだけ expose（それ以外は露出しない）
     ff_features: List[int] = []
@@ -3112,6 +3146,12 @@ def find_hidraw_for_event(event_path: str, *, timeout_sec=0.03, max_up=6) -> str
 # ------------------------
 
 class UnderSteer:
+    # 物理側: (role, src_abs) -> {min,max}
+    _abs_src_meta: dict[tuple[str,int], dict]
+    # 仮想側: vabs -> {min,max,center,dz_raw}（先勝ちを基準にする）
+    # vABS -> {min, max, center, dz_raw}
+    _abs_meta: dict[int, dict]
+    
     def __init__(self, wheel: DevInfo, shifter: DevInfo, ff_passthrough: bool = False, ff_passthrough_easy: bool = False,
                   gear_mapper: Optional[GearMapper] = None,
                   keymap: Optional["KeymapTSV"] = None,
@@ -3120,6 +3160,7 @@ class UnderSteer:
                   echo_buttons_tsv: bool = False,
                   args: Optional[argparse.Namespace] = None):
 
+        self._axis_scale: dict[int, tuple[int,int,int]] = {}  # code -> (src_min, src_max, mul)
         self._axis_cache = {}          # { ecodes.ABS_*: last_value }
         self._axis_cache_lock = threading.RLock()
         self._last_alive_ts = 0.0
@@ -3128,6 +3169,14 @@ class UnderSteer:
         self._axis_cache[ecodes.ABS_Y] = 0
         self._axis_cache[ecodes.ABS_Z] = 0
         self._axis_cache[ecodes.ABS_RZ] = 0
+
+        self._abs_map = {}
+        self._abs_owner = {}
+        self._abs_meta = {}
+        self._abs_src_meta = {}
+
+        # 追加: 実測センターを保持（初期は mid）
+        self._abs_src_center = {}   # (role, code) -> int
 
         self.wheel_info = wheel
         self.shifter_info = shifter
@@ -3140,7 +3189,11 @@ class UnderSteer:
             self.ignore_ffb = args.ignore_ffb
         else:
             self.ignore_ffb = "0"
-        
+
+        # どの仮想ABSコードを誰がオーナーかを覚える
+        # 例: { E.ABS_X: "wheel", E.ABS_Y: "wheel", E.ABS_RX: "tanto", ... }
+        self._abs_owner: dict[int, str] = {}
+
         #print("以下FFB無視")
         #print(self.ignore_ffb)
         
@@ -3205,7 +3258,8 @@ class UnderSteer:
             ff_mapper=self.ff_mapper,
             us=self,
         )
-
+        self.center_all_axes()
+        
         self.ui_event_path = self.ui.event_path
         print(
             f"[UnderSteer Device] created: {self.ui_event_path} name='{self.ui.name}' "
@@ -3259,6 +3313,19 @@ class UnderSteer:
         logging.info("---")
         logging.info("")
 
+    def center_all_axes(self):
+        abs_caps = self.ui.ui_caps.get(ecodes.EV_ABS, [])
+        #print(abs_caps)
+        # self.ui: evdev.UInput / self._abs_caps: {code: AbsInfo}
+        for code, info in abs_caps:
+            # AbsInfo(min, max, ...) からセンター計算 (-32767..32767 → 0、-1..1 → 0)
+            try:
+                c = (int(info.min) + int(info.max)) // 2
+            except Exception:
+                c = 0
+            self.ui.write(E.EV_ABS, code, c)
+        self.ui.syn()
+
     @staticmethod
     def _hat_dir_name(code: int, value: int) -> Optional[str]:
         """ABS_HAT* のコードと値から方向名を返す。value は -1/0/1。"""
@@ -3287,11 +3354,11 @@ class UnderSteer:
 
         import evdev
         telem = RateLimitedLogger(min_interval_ms=5000, min_delta=100)
-        latest = defaultdict(lambda: 0)
+        latest = defaultdict(int)
         
         # 可能なら初期値を一度読む
         try:
-            absinfo = dev.absinfo
+            absinfo = src.absinfo
             for name, code in ABS.items():
                 if code in absinfo:
                     latest[name] = absinfo[code].value
@@ -3318,10 +3385,10 @@ class UnderSteer:
                 if self.DEBUG_TELEMETORY:
                     # ★ 定期/変化時テレメトリ出力（軽量）
                     snapshot = {
-                        "steer": latest["steer"],
-                        "thr": latest["throttle"],
-                        "brk": latest["brake"],
-                        "clt": latest["clutch"],
+                        "steer": latest.get("steer", 0),
+                        "thr":   latest.get("throttle", 0),
+                        "brk":   latest.get("brake", 0),
+                        "clt":   latest.get("clutch", 0),
                         # ついでに内部状態を少し：キュー長やFFスロット利用状況など
                         "q": getattr(self, "_ev_queue_size", 0),
                         "ff_used": getattr(self, "_phys_ff_used", -1),   # 任意: 実装に合わせて更新
@@ -3379,17 +3446,18 @@ class UnderSteer:
                                             logging.error(f"[keymap] handle_named(press,{cur_name}) failed: {e}")
                             self._hat_state[key] = cur
 
-                noSendKey = False
+                SendKey = False
                 # キーボード送出（TSV）: 対象元（wheel/shift/both）と EV_KEY のみ処理
                 if (self.keymap and ev.type == ecodes.EV_KEY and (self.keymap_source == "both" or self.keymap_source == src_tag)):
                     if ev.code in self.keymap.watch_codes:
                         try:
                             self.keymap.handle_src_event(ev.code, ev.value)
-                            noSendKey = True
+                            SendKey = True
                         except Exception as e:
                             logging.error(f"[keymap] handle_src_event failed for code={ev.code}, val={ev.value}: {e}")
 
-                if ev.type in (ecodes.EV_ABS, ecodes.EV_KEY):
+                if ev.type == ecodes.EV_KEY:
+                    # 【Shift の場合】
                     if src_tag == "shift" and self.gear_mapper and ev.type == ecodes.EV_KEY:
                         # ギア関連キーであれば吸収 → 標準化出力に置換
                         changed = self.gear_mapper.feed_input_key(ev.code, ev.value)
@@ -3398,13 +3466,23 @@ class UnderSteer:
                             if changed:
                                 self.gear_mapper.emit_to(self.ui)
                             # ここでは元イベントは流さない
-                        else:
-                            # ギア無関係のキーはそのまま流す
-                            self.ui.emit(ev.type, ev.code, ev.value)
                     else:
-                        # Wheel もしキー送出なら本体のは送らない
-                        if not noSendKey:
-                            self.ui.emit(ev.type, ev.code, ev.value)
+                        self.ui.emit(ev.type, ev.code, ev.value)
+
+                elif ev.type == ecodes.EV_ABS:
+                    v = ev.value
+                    # Default
+                    v_scaled = v
+                    #if v in (-1, 0, 1):  # HATなどの軸範囲が -1〜1 の場合
+                    #    v *= 32767  （削除：スケーラに任せる）
+                    vabs = self._map_src_abs_to_virtual(src_tag, ev.code)
+                    if vabs is None:
+                        print("Error: 想定外")
+                        continue
+                    # スケール
+                    v_scaled = self._scale_abs_to_virtual(src_tag, ev.code, vabs, v)
+                    self.ui.emit(E.EV_ABS, vabs, v_scaled)
+
                 elif ev.type == ecodes.EV_FF:
                     # 物理から FF が来るケースは稀だが一応無視
                     pass
@@ -3426,6 +3504,101 @@ class UnderSteer:
             except Exception:
                 pass
 
+    def register_abs_mapping_first_win(self, role, caps, deadzone_pct=0.025):
+        abs_caps = caps.get(ecodes.EV_ABS, [])
+        for code, ai in abs_caps:
+            vabs = int(code)
+            self._abs_map[(role, int(code))] = vabs
+
+            smin = int(getattr(ai, "min", -32768))
+            smax = int(getattr(ai, "max",  32767))
+            self._abs_src_meta[(role, vabs)] = {"min": smin, "max": smax}
+            # 初期センターは mid（実測で後から馴染ませる）
+            self._abs_src_center[(role, vabs)] = (smin + smax) // 2
+
+            if vabs not in self._abs_owner:
+                self._abs_owner[vabs] = role
+
+            # 仮想側（先勝ちを基準に固定）
+            if vabs not in self._abs_meta:
+                vmin, vmax = smin, smax
+                vcenter = (vmin + vmax) // 2
+                full = max(1, vmax - vmin)
+                dz_raw = max(1, int(full * deadzone_pct))
+                self._abs_meta[vabs] = {"min": vmin, "max": vmax, "center": vcenter, "dz_raw": dz_raw}
+            #print(f"vabs : {vabs}")
+            #print(self._abs_meta[vabs])
+        """
+        abs_caps = caps.get(ecodes.EV_ABS, [])
+        for code, absinfo in abs_caps:
+             vabs = int(code)  # identity
+             self._abs_map[(role, int(code))] = vabs
+
+             # 物理側レンジも記録
+             try:
+                 smin = int(absinfo.min)
+                 smax = int(absinfo.max)
+             except Exception:
+                 smin, smax = -32768, 32767
+             self._abs_src_meta[(role, int(code))] = {"min": smin, "max": smax}
+
+             # 仮想（ターゲット）メタは先勝ち優先で決める
+             if vabs not in self._abs_owner:
+                 self._abs_owner[vabs] = role
+             amin, amax = smin, smax
+             center = (amin + amax) // 2
+             full = max(1, amax - amin)
+             dz_raw = max(1, int(full * deadzone_pct))
+             if vabs not in self._abs_meta:
+                 self._abs_meta[vabs] = {"min": amin, "max": amax, "center": center, "dz_raw": dz_raw}
+        """
+
+    # 低速で実測センターを追従（静止時のみ）
+    def _track_center(self, role, code, raw):
+        key = (role, int(code))
+        meta = self._abs_src_meta.get(key); c = self._abs_src_center.get(key)
+        if not meta or c is None: return
+        smin, smax = meta["min"], meta["max"]
+        dz_src = max(1, int((smax - smin) * 0.025))   # 2.5% 相当
+        if abs(int(raw) - c) <= dz_src:
+            alpha = 0.02  # 遅めのEMAでドリフトだけ吸収
+            self._abs_src_center[key] = int(round((1-alpha)*c + alpha*int(raw)))
+
+    @staticmethod
+    def _lin_piecewise(raw, smin, c, smax, dmin, dc, dmax):
+        r = int(raw)
+        if r >= c:
+            denom = max(1, smax - c)
+            ratio = (r - c) / denom
+            return int(round(dc + ratio * (dmax - dc)))
+        else:
+            denom = max(1, c - smin)
+            ratio = (r - c) / denom  # 負値
+            return int(round(dc + ratio * (dc - dmin)))
+
+    def _scale_abs_to_virtual(self, role, src_abs, vabs, raw):
+        src = self._abs_src_meta.get((role, int(src_abs)))
+        #print(f"vabs : {vabs}")
+        dst = self._abs_meta.get(int(vabs))
+        if not src or not dst: return int(raw)
+        smin, smax = src["min"], src["max"]
+        #print(f"smin, smax : {smin}, {smax}")
+        c = self._abs_src_center.get((role, int(src_abs)), (smin + smax)//2)
+        vmin, vmax, vcenter = dst["min"], dst["max"], dst["center"]
+        #print(f"vmin, vmax : {vmin}, {vmax}")
+        ret = self._lin_piecewise(raw, smin, c, smax, vmin, vcenter, vmax)
+        #print(f"ret : {ret}")
+        return ret
+
+    def _map_src_abs_to_virtual(self, src_tag: str, src_abs_code: int) -> Optional[int]:
+        """
+        物理ABS -> 仮想ABS 変換。
+        - 明示マップがあればそれを返す
+        - 無ければ “未マップ” として None（破棄）を返す
+          （※ identity フォールバックをしたい場合は vabs=src_abs_code を返す）
+        """
+        key = (src_tag, int(src_abs_code))
+        return self._abs_map.get(key, None)
 
     def _write_ff(self, wheel_dev, t, c, v):
         try:
@@ -3489,13 +3662,6 @@ class UnderSteer:
                 except Exception:
                     pass
 
-            # 2) FFB worker 停止
-            #if self.ff_worker:
-            #    try:
-            #        await self.ff_worker.stop()
-            #    except Exception as e:
-            #        logging.error("ff_worker.stop() ignored error: %s", e)
-
             # 3) grab 解除
             if grabbed:
                 for dev, tag in ((self.wheel_info.dev, "wheel"), (self.shifter_info.dev, "shifter")):
@@ -3504,7 +3670,6 @@ class UnderSteer:
                         logging.debug("ungrabbed: %s", tag)
                     except Exception:
                         pass
-
 
             # 4) ff_worker 停止
             if hasattr(self, "ff_worker") and self.ff_worker:

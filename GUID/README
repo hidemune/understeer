@@ -1,7 +1,11 @@
 sudo apt install -y libsdl2-dev   # ← pip不要、開発ヘッダのみ
-gcc -o sdl-guid sdl_guid.c $(pkg-config --cflags --libs sdl2)
-./sdl-guid
+gcc -o sdl-guid sdl_guid.c $(sdl2-config --cflags --libs)
 
+
+user@user-RM5R-R46:~/git/understeer/GUID$ ./sdl-guid 
+Joysticks: 2
+#0 path=/dev/input/js0 name="Thrustmaster Racing Wheel FFB" guid=03004ad34f04000096b6000011010000
+#1 path=/dev/input/js1 name="Xbox 360 Controller" guid=0300cb2a5e0400008e02000000010000
 
 
 #   name="UnderSteer FFB Wheel-Shifter" guid=0300.... の guid= を控えてください。

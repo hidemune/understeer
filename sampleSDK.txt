@@ -1,0 +1,47 @@
+以下のように、guid を取得
+
+user@user-RM5R-R46:~/git/understeer$ ./sdl-guid 
+Joysticks: 2
+#0 name="Thrustmaster Racing Wheel FFB" guid=03004ad34f04000096b6000011010000
+#1 name="Xbox 360 Controller" guid=030003f05e0400008e02000000010000
+
+Steam 起動オプションは以下のように設定
+
+SDL_GAMECONTROLLERCONFIG="030003f05e0400008e02000000010000,UnderSteer Virtual Wheel,leftx:a0,lefty:a2,rightx:,righty:a6,lt:a1,rt:a5,dpup:a9-,dpdown:a9+,dpleft:a8-,dpright:a8+,a:b5,b:b4,x:b3,y:b2,back:b21,start:b22,guide:b12,lb:b0,rb:b1,leftstick:b6,rightstick:b7,platform:Linux," %command%
+
+030003f05e0400008e02000000010000,UnderSteer Virtual Wheel,leftx:a0,lefty:a2,rightx:,righty:a6,lt:a1,rt:a5,
+dpup:a9-,dpdown:a9+,dpleft:a8-,dpright:a8+,
+a:b5,b:b4,x:b3,y:b2,back:b21,start:b22,guide:b12,lb:b0,rb:b1,leftstick:b6,rightstick:b7,platform:Linux,
+
+
+
+
+【HATキーの設定方法】
+
+1) HAT型（ABS_HAT0X/Y）のとき
+
+SDLの書式は dpup:hN.1, dpright:hN.2, dpdown:hN.4, dpleft:hN.8 です。
+
+ABS_HAT0X/Y なら h0.1,h0.2,h0.4,h0.8 に変更
+ABS_HAT1X/Y なら h1.1,h1.2,h1.4,h1.8 に変更
+
+
+2) ボタン型（BTN_DPAD_*）のとき
+
+HATではなくボタン番号 bN を使います。例：
+
+dpup:b12, dpdown:b13, dpleft:b14, dpright:b15
+
+（番号は evtest / jstest の結果に合わせてください）
+
+
+3) 軸型（ABS_X/Y を十字に流用）のとき
+
+SDLは 符号つき方向指定ができます。
+
+dpleft:a0-, dpright:a0+, dpup:a1-, dpdown:a1+
+
+
+X= a0, Y= a1 は例。実際の軸 index に置換。
+
+上下が逆なら dpup:a1+ / dpdown:a1- に入れ替え。

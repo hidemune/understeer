@@ -46,8 +46,8 @@ bash ./steamOption.sh
 if [ $? -eq 0 ]; then
     echo "..."
 else
-    echo "ハンドルコントローラを接続してください。"
-    echo "Connect the steering wheel controller."
+    echo "[JP] ハンドルコントローラを接続してください。"
+    echo "[EN] Connect the steering wheel controller."
     echo ""
     echo "Press Enter Key to Exit."
     read ok
@@ -107,7 +107,7 @@ if [ "$sel" = "3" ]; then
   steam steam://rungameid/1249970 >/dev/null 2>&1 &
   # --gear-map gears.dat        ニュートラル入力が別途必要な場合に指定
   # --keymap keymapTDUSC.dat    キーボードに入力を転送したい場合
-  sudo python3 understeer.py --ff-pass-through --gear-map gears.dat \
+  sudo python3 understeer.py --ff-pass-through$mode --gear-map gears.dat \
                                       --keymap keymapTDUSC.dat  
 fi
 
@@ -158,15 +158,19 @@ if [ "$sel" = "14" ]; then
   flg="T"; minimize_self
 
 #GUID の取り方（どちらか）
-#・Steamログを見る：~/.steam/steam/logs/controller.txt に Added ... GUID 03000000... が出ます
-#・SDLツール：controllermap 0 などを使うと、最後に GUID と雛形が出力されます
+#user@user-RM5R-R46:~/git/jstest-sdl$ cd
+#user@user-RM5R-R46:~$ cd git/understeer/
+#user@user-RM5R-R46:~/git/understeer$ ./sdl-guid 
+#Joysticks: 2
+##0 path: /dev/input/js1 (event: /dev/input/event26) name: "Thrustmaster Racing Wheel FFB" guid: 03004ad34f04000096b6000011010000 vendor: 0x044f product: 0xb696 version: 0x0111
+##1 path: /dev/input/js3 (event: /dev/input/event28) name: "Xbox 360 Controller understeer" guid: 0300ca40dead0000beef000000010000 vendor: 0xadde product: 0xefbe version: 0x0100
 #※ GUID は 必ず実際の値に置き換えてください（これが違うと丸ごと無視されます）。
-export SDL_GAMECONTROLLERCONFIG="030039c76d0400004fc2000000010000,UnderSteer Virtual Wheel,leftx:a0,lefty:a1,rightx:a2,righty:a3,lt:a4,rt:a5,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,a:b0,b:b1,x:b2,y:b3,back:b6,start:b7,guide:b8,lb:b5,rb:b6,leftstick:b9,rightstick:b10,platform:Linux,"
+echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,UnderSteer Virtual Wheel,leftx:a0,lefty:a7,rightx:a4,righty:a6,lt:a1,rt:a5,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,a:b5,b:b4,x:b3,y:b2,back:b21,start:b22,guide:b12,lb:b0,rb:b1,leftstick:b6,rightstick:b7,platform:Linux" %command%'
   steam steam://rungameid/1190000 >/dev/null 2>&1 &
   # --gear-map gears.dat        ニュートラル入力が別途必要な場合に指定
   # Xbox360 Controller
   #sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode  
-  sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode --vid 0x045e --pid 0x028e --vname b"Xbox 360 Controller" 
+  sudo python3 understeer.py --gear-map gears.dat --ff-pass-through --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" 
 fi
 
 
