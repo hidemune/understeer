@@ -2973,9 +2973,7 @@ def merge_capabilities(
                 dst_min, dst_max = absinfo.min, absinfo.max
                 mul = 1
                 # 物理が -1..1（または 0..1）の「正規化済み」軸なら仮想側で 16bit レンジへ拡大
-                if absinfo.min == -1 and absinfo.max == 1:
-                    dst_min, dst_max, mul = -32767, 32767, 32767
-                elif absinfo.min == 0 and absinfo.max == 1:
+                if absinfo.min == 0 and absinfo.max == 1:
                     dst_min, dst_max, mul = 0, 32767, 32767
                 abs_list[code] = AbsInfo(
                     value=0, min=dst_min, max=dst_max,
