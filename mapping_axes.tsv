@@ -1,0 +1,57 @@
+# VIRTUAL_AXES_ORDER: ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ, ABS_HAT0X, ABS_HAT0Y, ABS_THROTTLE, ABS_RUDDER
+# 並び替えガイド: 上から順に割当 / 空行=グループ区切り（同一仮想へ合流）
+# 列: js_index	device_name	src_tag	src_type	src_code_name	src_code	default_virtual	js_index_in_js
+# ABS_X
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_0	0	ABS_0	0
+1	HyperX Clutch Tanto	shift	ABS	ABS_0	0	ABS_0	0
+#? (auto-assigned to ABS_X; edit if needed)
+
+# ABS_Y
+1	HyperX Clutch Tanto	shift	ABS	ABS_1	1	ABS_1	1
+#? (auto-assigned to ABS_Y; edit if needed)
+
+# ABS_Z (brake)
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_1	1	ABS_1	1	REVERSE
+1	HyperX Clutch Tanto	shift	ABS	ABS_2	2	ABS_2	2
+#? (auto-assigned to ABS_Z; edit if needed)
+
+# ABS_RX
+1	HyperX Clutch Tanto	shift	ABS	ABS_3	3	ABS_3	3
+#? (auto-assigned to ABS_RX; edit if needed)
+
+# ABS_RY
+1	HyperX Clutch Tanto	shift	ABS	ABS_4	4	ABS_4	4
+#? (auto-assigned to ABS_RY; edit if needed)
+
+# ABS_RZ (throttle)
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_5	5	ABS_5	5	REVERSE
+1	HyperX Clutch Tanto	shift	ABS	ABS_5	5	ABS_5	5
+#? (auto-assigned to ABS_RZ; edit if needed)
+
+# ABS_HAT0X
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_16	16	ABS_16	8
+1	HyperX Clutch Tanto	shift	ABS	ABS_16	16	ABS_16	6
+#? (auto-assigned to ABS_HAT0X; edit if needed)
+
+# ABS_HAT0Y
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_17	17	ABS_17	9
+1	HyperX Clutch Tanto	shift	ABS	ABS_17	17	ABS_17	7
+#? (auto-assigned to ABS_HAT0Y; edit if needed)
+
+# ABS_THROTTLE
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_6	6	ABS_6	6	REVERSE
+#? (auto-assigned to ABS_THROTTLE; edit if needed)
+
+# ABS_RUDDER
+#? (auto-assigned to ABS_RUDDER; edit if needed)
+
+
+
+# --- EXTRA CANDIDATES (not auto-assigned) ---
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_2	2	ABS_2	2
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_3	3	ABS_3	3
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_4	4	ABS_4	4
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_7	7	ABS_7	7
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_40	40	ABS_40	10
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	ABS	ABS_2	2	ABS_2	0
+

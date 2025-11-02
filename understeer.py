@@ -46,6 +46,255 @@ import time
 import logging
 from collections import defaultdict
 
+import sys, logging, signal
+import faulthandler; faulthandler.enable()  # 例外時・終了時にスタックを必ず出す
+from evdev.ecodes import ABS
+
+from evdev.ecodes import ABS as EC_ABS
+
+def _resolveAbsCode(code_or_name):
+    """ 'ABS_2' / 'ABS_THROTTLE' / 2 → int （失敗 None）"""
+    if isinstance(code_or_name, int):
+        return code_or_name
+    s = str(code_or_name).strip().upper()
+    if s.isdigit():
+        return int(s)
+    if s.startswith("ABS_") and s[4:].isdigit():
+        return int(s.split("_",1)[1])
+    return EC_ABS.get(s, None)
+
+def _findReverseOption(axisMappings, srcTag: str, srcCode: int):
+    """
+    axisMappings から srcTag × srcCode に合致する行を探し、
+    {'reverse': True/False, ...} を返す。無ければ None。
+    ※ srcAbs が 'ABS_2' 文字列で入っていても吸収する。
+    """
+    logging.debug("_findReverseOption")
+    logging.debug(srcTag)
+    logging.debug(srcCode)
+    target = int(srcCode)
+    for row in axisMappings:
+        tag = (row.get("srcTag") or "").strip().lower()
+        if tag != srcTag:
+            continue
+        cand = int(row.get("srcAbs"))
+        if cand == target:
+            return row.get("options")
+    return None
+
+# SIGUSR1 を送ると全スレッドのスタックを即時ダンプできる:
+def _dump_stacks(signum, frame):
+    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+signal.signal(getattr(signal, "SIGUSR1", signal.SIGINT), _dump_stacks)
+
+# ログ詳細化（必要なら上書き）
+logging.getLogger().setLevel(logging.DEBUG)
+
+axisMappings = []
+def invertRawValue(v: int, vmin: int, vmax: int) -> int:
+    # 中心反転の一般式。双極/単極どちらでもOK。
+    return vmin + vmax - v
+def findAxisRow(axisMappings, srcTag: str, srcAbsCode: str | int):
+    """最初に一致した1行（dict）を返す。無ければ None。"""
+    #print(axisMappings)
+    for row in axisMappings:
+        if row.get("srcTag") == srcTag:
+            if int(row.get("note")) == int(srcAbsCode):
+                return row
+    return None
+
+# --- TSV を [(src_type, src_code), ...] へ正規化する共通ヘルパ ---
+def _normalize_groups(groups):
+    """
+    groups: [
+      [ ( 'ABS', 0 ), ( 'ABS', 16 ), ... ],               # 既に2タプル形式
+      [ (jsi,dname,tag,stype,scode_name,scode,defv), ...] # 7列形式
+    ] の混在を受け取り、すべて (src_type:str, src_code:int) に揃える
+    """
+    out = []
+    for grp in groups:
+        ng = []
+        for row in grp:
+            if not isinstance(row, (list, tuple)):
+                continue
+            if len(row) >= 2 and isinstance(row[0], str) and isinstance(row[1], (int, str)):
+                # 2タプル（ or 2要素以上で先頭がstype/次がscode 的な形）
+                stype = str(row[0]).strip()
+                try:
+                    scode = int(row[1])
+                except Exception:
+                    continue
+                ng.append((stype, scode))
+            elif len(row) >= 7:
+                # 7列TSV: [js_index, device_name, src_tag, src_type, src_code_name, src_code, default_virtual, ...]
+                stype = str(row[3]).strip()
+                try:
+                    scode = int(row[5])
+                except Exception:
+                    # 名前→コード救済
+                    from evdev import ecodes as _EC
+                    scode = _EC.ecodes.get(str(row[4]).strip(), None)
+                    if scode is None:
+                        continue
+                ng.append((stype, int(scode)))
+            # どれにも当てはまらなければ捨てる
+        out.append(ng)
+    return out
+
+def parseOptionsCell(cell: str) -> dict:
+    """
+    最後の列のオプション文字列をパース。
+    例: "REVERSE DEADZONE=200" → {"reverse": True, "deadzone": 200}
+    今回はREVERSEのみ使えばOK。拡張を見越して汎用に。
+    """
+    opts = {"reverse": False}
+    if not cell:
+        return opts
+    tokens = [t.strip() for t in cell.split() if t.strip()]
+    for t in tokens:
+        u = t.upper()
+        if u in ("REVERSE", "INV", "INVERT", "INVERTED"):
+            opts["reverse"] = True
+        # 拡張例（将来用）:
+        # elif u.startswith("DEADZONE="):
+        #     try:
+        #         opts["deadzone"] = int(u.split("=",1)[1])
+        #     except ValueError:
+        #         pass
+    return opts
+
+from evdev.ecodes import ABS as EC_ABS
+
+def _toAbsCode(name_or_num: str):
+    s = (str(name_or_num).strip()).upper()
+    if s.isdigit():
+        return int(s)
+    if s.startswith("ABS_") and s[4:].isdigit():
+        return int(s[4:])
+    return EC_ABS.get(s, None)
+
+# --- TSV loader (blank-line groups) ---
+def _parse_mapping_tsv(path: str):
+    groups, cur = [], []
+    group_id = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.rstrip("\r\n") + "\t\t\t\t\t"           # ← ここ
+            if not line.strip():
+                if cur:
+                    groups.append(cur)
+                    cur = []
+                    group_id += 1               # ← グループを進める
+                continue
+            if line.lstrip().startswith("#"):
+                continue
+
+            cols = line.split("\t")
+            if len(cols) < 8:                   # ← ここ
+                continue
+            cols = cols[:9]
+
+            src_type = cols[3].strip().upper()                  # "ABS" or "KEY"
+            src_tag  = cols[2].strip().lower()                  # 'wheel'等
+            if src_tag not in ("wheel", "shift", "pad"):
+                # 列ズレ検知のために早期スキップ（ログ推奨）
+                logging.error(f"列ズレ検知  {path} ... 3rd col srcTag:{src_tag}")
+                continue
+
+            # 文字列名 or 数字どちらでも吸収
+            src_code = _toAbsCode(cols[5] or cols[4])
+            if src_code is None:
+                continue
+
+            virt_code = group_id    #_toAbsCode(cols[6])     # default_virtual
+            try:
+                options   = cols[8] or ""
+                opts_dict = parseOptionsCell(options)
+            except:
+                options = ""
+                opts_dict = []
+            # ★ groups 用（ Type - src -virt ）
+            cur.append((src_tag, int(src_code), group_id))
+
+            # ★ axisMappings 用（数値で保持・group_id付与）
+            entry = {
+                "group_id": group_id,
+                "device": cols[0],
+                "srcTag": src_tag,              # 'wheel' 等
+                "srcAbs": int(src_code),        # ★ 数値コードで保存！
+                "virtAbs": virt_code,           # ★ ここも数値に（必要に応じて None 可）
+                "note": cols[7],                # js_index_in_js
+                "options": opts_dict,           # {'reverse': True/False}
+            }
+            axisMappings.append(entry)
+            logging.info(entry)
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+# 仮想順（未定義なら置く。既にあればスキップ）
+try:
+    VIRTUAL_AXES_ORDER
+except NameError:
+    VIRTUAL_AXES_ORDER = ["ABS_X", "ABS_Y", "ABS_Z", "ABS_RX", "ABS_RY", "ABS_RZ", "ABS_HAT0X", "ABS_HAT0Y", "ABS_THROTTLE", "ABS_RUDDER"]
+try:
+    VIRTUAL_BUTTONS_ORDER
+except NameError:
+    VIRTUAL_BUTTONS_ORDER = ["BTN_TRIGGER","BTN_THUMB","BTN_THUMB2","BTN_TOP","BTN_TOP2","BTN_PINKIE","BTN_BASE","BTN_BASE2","BTN_BASE3","BTN_BASE4","BTN_BASE5","BTN_BASE6","BTN_0","BTN_1","BTN_2","BTN_3","BTN_4","BTN_5","BTN_6","BTN_7","BTN_8","BTN_9","BTN_DEAD"]
+
+# --- routing builder ---
+def build_routing_from_tsv(axes_path: str|None, btns_path: str|None):
+    """
+    戻り:
+      virt2src: dict[str vname] -> list[(src_type, src_code)]
+      src2virt: dict[(src_type, src_code)] -> list[str vname]
+      map_src2virt_abs: dict[("ABS", code)] -> int vcode
+      map_src2virt_key: dict[("KEY", code)] -> int vcode
+    """
+    logging.info("build_routing_from_tsv {axes_path} {btns_path}")
+    from evdev import ecodes as _EC
+    axes_groups   = _parse_mapping_tsv(axes_path) if axes_path else []
+    button_groups = _parse_mapping_tsv(btns_path) if btns_path else []
+
+    virt2src, src2virt = {}, {}
+    # 仮想→物理 / 物理→仮想（名前）
+    for i, grp in enumerate(axes_groups):
+        logging.info(f"axes_groups / {i} {grp}")
+        if i >= len(axes_groups): break
+        vname = VIRTUAL_AXES_ORDER[grp[0][2]]
+        logging.info(f"vname / {vname}")
+        lst=[]
+        for (stype, scode, vcode) in grp:
+            scode=int(scode); lst.append((stype, scode))
+            src2virt.setdefault((stype, scode), []).append(vname)
+        virt2src[vname]=lst
+    for i, grp in enumerate(button_groups):
+        logging.info(f"button_groups / {i} {grp}")
+        if i >= len(VIRTUAL_BUTTONS_ORDER): break
+        vname = VIRTUAL_BUTTONS_ORDER[grp[0][2]]
+        logging.info(f"vname / {vname}")
+        lst=[]
+        for (stype, scode, vcode) in grp:
+            scode=int(scode); lst.append((stype, scode))
+            src2virt.setdefault((stype, scode), []).append(vname)
+        virt2src[vname]=lst
+
+    # 実 emit 用（数値仮想コード）
+    map_src2virt_abs, map_src2virt_key = {}, {}
+    for i, vname in enumerate(VIRTUAL_AXES_ORDER):
+        if i >= len(axes_groups): break
+        
+        for (stype, scode, vcode) in axes_groups[i]:
+            map_src2virt_abs[(stype, int(scode))]=int(vcode)
+    for i, vname in enumerate(VIRTUAL_BUTTONS_ORDER):
+        if i >= len(button_groups): break
+        
+        for (stype, scode, vcode) in button_groups[i]:
+            map_src2virt_key[(stype, int(scode))]=int(vcode)
+
+    return virt2src, src2virt, map_src2virt_abs, map_src2virt_key
+
 # Project Cars 2 で、 4.0 〜 5.0 ms ぐらい。
 # 500Hz (=  2.00 ms)
 # 250Hz (=  4.00 ms)
@@ -323,6 +572,194 @@ EVIOCRMFF = 0x40044581  # int 引数 (_IOW('E', 0x81, int))
 # 先頭の import 付近
 import struct
 from collections.abc import Mapping
+
+# --- add: OR 合流用のボタン・コアレッサ ---
+from collections import defaultdict
+
+# --- add: HAT 合流（priority / last） ---
+import time
+from collections import defaultdict
+
+try:
+    from evdev import ecodes as _EC
+    _HATX = getattr(_EC, "ABS_HAT0X", 16)
+    _HATY = getattr(_EC, "ABS_HAT0Y", 17)
+except Exception:
+    _HATX, _HATY = 16, 17  # フォールバック
+
+class _HatCoalesce:
+    """
+    HAT(ABS_HAT0X / ABS_HAT0Y)を複数ソースから1つの仮想へ合流。
+    mode='priority' : 先に定義/遭遇したソースを優先（最初に非0を出しているソースを採用）
+    mode='last'     : 最後に変化したソースを採用
+    使い方（どれでもOKな柔軟API）:
+      update(vcode, value)
+      update(vcode, src, value)
+      update(src, vcode, value)   # src と vcode の順が逆でも判定して補正
+    エミッタ emit は emit(abs_code:int, value:int) を想定（-1/0/1）
+    """
+    def __init__(self, emit, mapping_virt2src=None, mode="priority"):
+        self.emit = emit
+        self.mode = "last" if mode == "last" else "priority"
+        self._vals = defaultdict(dict)        # vcode -> {src_key: value(-1/0/1)}
+        self._ts   = defaultdict(dict)        # vcode -> {src_key: last_change_ts}
+        self._order= defaultdict(list)        # vcode -> [src_key,...]（priority用既定順）
+        self._last_out = {}                   # vcode -> last emitted value
+
+        # 可能ならマッピングから優先順を初期化（形は不問、文字列化してキー化）
+        if mapping_virt2src:
+            for vcode, src_list in mapping_virt2src.items():
+                for s in src_list:
+                    sk = self._src_key(s)
+                    if sk not in self._order[vcode]:
+                        self._order[vcode].append(sk)
+
+    def _src_key(self, obj):
+        # src を一意化するためのキー化（タプル/辞書/数値/文字列どれでもOKに）
+        try:
+            if isinstance(obj, (list, tuple)):
+                return "t:" + "|".join(map(str, obj))
+            if isinstance(obj, dict):
+                return "d:" + "|".join(f"{k}={v}" for k,v in sorted(obj.items()))
+            return "s:" + str(obj)
+        except Exception:
+            return "s:" + repr(obj)
+
+    # 既存の _parse_args を以下に置き換え
+    def _parse_args(self, *args):
+        """
+        許容:
+          (vcode, value)
+          (vcode, src, value)
+          (src, vcode, value)
+          (vname, vcode, src_tag, src_code, value)  # ← 今回これ
+        戻り: (vcode:int, src_key:str|None, value:int)
+        """
+        if len(args) < 2:
+            raise TypeError("update() expects at least 2 arguments")
+
+        # value は“最後の int”とみなす（-1/0/1で丸め）
+        ints = [a for a in args if isinstance(a, int)]
+        if not ints:
+            value = 0
+        else:
+            value = ints[-1]
+        try:
+            value = int(value)
+            value = -1 if value < 0 else (1 if value > 0 else 0)
+        except Exception:
+            value = 0
+
+        # vcode は HAT のコード(16/17)を優先的に拾う。無ければ最初の int を採用
+        vcode = None
+        for a in args:
+            if isinstance(a, int) and a in (_HATX, _HATY):
+                vcode = a
+                break
+        if vcode is None:
+            # 最初の int にフォールバック
+            vcode = next((a for a in args if isinstance(a, int)), _HATX)
+
+        # src は “vcode/value 以外”をまとめてキー化
+        src_parts = []
+        for a in args:
+            if a is vcode or (isinstance(a, int) and a == value):
+                continue
+            src_parts.append(a)
+        src_key = None if not src_parts else self._src_key(tuple(src_parts))
+
+        return int(vcode), src_key, int(value)
+
+    # これをクラスの末尾あたりに追加（エイリアス）
+    def on(self, *args):
+        self.update(*args)
+
+    def update(self, *args):
+        vcode, src_key, value = self._parse_args(*args)
+
+        # HAT 以外は素通し
+        if vcode not in (_HATX, _HATY):
+            if self._last_out.get(vcode) != value:
+                self._last_out[vcode] = value
+                self.emit(vcode, value)
+            return
+
+        now = time.monotonic()
+
+        # src_key が無い（単独ソース）の場合は即時反映
+        if src_key is None:
+            if self._last_out.get(vcode) != value:
+                self._last_out[vcode] = value
+                self.emit(vcode, value)
+            return
+
+        # 値・時刻を記録（遭遇順を保持）
+        self._vals[vcode][src_key] = value
+        self._ts[vcode][src_key] = now
+        if src_key not in self._order[vcode]:
+            self._order[vcode].append(src_key)
+
+        # 合流ポリシで代表値を決定
+        if self.mode == "last":
+            # 直近で変化した非0を優先、全0なら0
+            cand = [(sk, self._ts[vcode].get(sk, 0), self._vals[vcode].get(sk, 0))
+                    for sk in self._vals[vcode]]
+            # 非0のみ
+            nonzero = [t for t in cand if t[2] != 0]
+            if nonzero:
+                nonzero.sort(key=lambda t: t[1], reverse=True)
+                out = nonzero[0][2]
+            else:
+                out = 0
+        else:
+            # priority: _order の先頭から見て最初に非0の値を採用。全0なら0
+            out = 0
+            for sk in self._order[vcode]:
+                v = self._vals[vcode].get(sk, 0)
+                if v != 0:
+                    out = v
+                    break
+
+        # 変化した時だけ emit
+        if self._last_out.get(vcode) != out:
+            self._last_out[vcode] = out
+            self.emit(vcode, out)
+
+    # 互換用エイリアス
+    set = update
+    put = update
+    on_event = update
+
+class _ButtonCoalesce:
+    """
+    複数の物理ボタンを1つの仮想ボタンに OR 合流するための小物。
+    press/release で参照カウント、0→1/1→0時のみ emit する。
+    """
+    def __init__(self, emit):
+        self.emit = emit                    # emit(key_code, value[0/1])
+        self._ref = defaultdict(int)        # key_code -> active press count
+
+    def press(self, code: int):
+        c = self._ref[code]
+        if c == 0:
+            self.emit(code, 1)              # 立上りのみ送出
+        self._ref[code] = c + 1
+
+    def release(self, code: int):
+        c = self._ref.get(code, 0)
+        if c <= 1:
+            self._ref[code] = 0
+            self.emit(code, 0)              # 立下りのみ送出
+        else:
+            self._ref[code] = c - 1
+
+    def update(self, code: int, is_down: bool):
+        (self.press if is_down else self.release)(int(code))
+
+    # 互換エイリアス
+    on  = update
+    off = lambda self, code, *_: self.update(int(code), False)
+
 
 # どこか共有ユーティリティに
 def _coerce_effect_id(p):
@@ -1656,7 +2093,6 @@ class UInputFFDevice:
         
         self._last_up_cache = {}   # key: virt_id -> (bytes_signature, last_ts)
         self._dedup_window_ms = 8  # 短い同一更新はスキップ（必要に応じて 3〜15ms で調整）
-        
         
         self._last_ff_end_ts = 0.0
         self._min_ff_gap_sec = 0.002  # 2ms 程度の最小間隔（必要なら 0.0 に）
@@ -3156,7 +3592,37 @@ class UnderSteer:
                   keymap_source: str = "both",
                   echo_buttons: bool = False,
                   echo_buttons_tsv: bool = False,
-                  args: Optional[argparse.Namespace] = None):
+                  args: Optional[argparse.Namespace] = None,
+                  mapping_virt2src: Optional[dict] = None,
+                  mapping_src2virt: Optional[dict] = None,
+                  mapping_mode: str = "priority"):
+
+        # args.mapping_axes / args.mapping_buttons を使ってロード
+        try:
+            (self.mapping_virt2src,
+             self.mapping_src2virt,
+             self.map_src2virt_abs,
+             self.map_src2virt_key) = build_routing_from_tsv(
+                 args.mapping_axes, args.mapping_buttons
+             )
+            logging.info("[mapping] loaded (axes_groups=%d, buttons_groups=%d)",
+                         len(_parse_mapping_tsv(args.mapping_axes) if args.mapping_axes else []),
+                         len(_parse_mapping_tsv(args.mapping_buttons) if args.mapping_buttons else []))
+        except Exception as e:
+            logging.error("[mapping] load failed: %s", e)
+            traceback.print_exc()
+            self.mapping_virt2src = {}
+            self.mapping_src2virt = {}
+            self.map_src2virt_abs = {}
+            self.map_src2virt_key = {}
+
+        self._ensure_btn_co()
+
+        # --- Button coalesce の初期化（常時作っておく） ---
+        def _emit_key(code, val):
+            # evdev へキー出力
+            self.ui.write(E.EV_KEY, int(code), int(val))
+        self._btn_co = _ButtonCoalesce(_emit_key)
 
         self._axis_scale: dict[int, tuple[int,int,int]] = {}  # code -> (src_min, src_max, mul)
         self._axis_cache = {}          # { ecodes.ABS_*: last_value }
@@ -3208,6 +3674,21 @@ class UnderSteer:
 
         self.keymap = keymap
         self.keymap_source = keymap_source  # "wheel" | "shift" | "both"
+        # マッピング（TSV）
+        self.mapping_virt2src = mapping_virt2src or {}
+        self.mapping_src2virt = mapping_src2virt or {}
+        self.mapping_mode = mapping_mode
+        if self.mapping_virt2src or self.mapping_src2virt:
+            def _emit_btn(vcode: int, pressed: int):
+                self.ui.write(ecodes.EV_KEY, vcode, pressed); self.ui.syn()
+            def _emit_abs(vcode: int, value: int):
+                self.ui.write(ecodes.EV_ABS, vcode, value); self.ui.syn()
+            self._btn_co = _ButtonCoalesce(_emit_btn)
+            self._hat_co = _HatCoalesce(_emit_abs, self.mapping_virt2src, mode=("last" if mapping_mode=="last" else "priority"))
+        else:
+            self._btn_co = None
+            self._hat_co = None
+
         self.echo_buttons = echo_buttons
         self.echo_buttons_tsv = echo_buttons_tsv
         # HAT の現在状態 (-1/0/1) を保持（押下/解放の遷移検出用）
@@ -3257,6 +3738,10 @@ class UnderSteer:
             us=self,
         )
         self.center_all_axes()
+        
+        def _emit_btn(code, val):
+            self.ui.write(E.EV_KEY, int(code), 1 if val else 0)
+        self._btn_co = _ButtonCoalesce(_emit_btn)
         
         self.ui_event_path = self.ui.event_path
         print(
@@ -3310,6 +3795,58 @@ class UnderSteer:
         logging.info("UnderSteer: Init End")
         logging.info("---")
         logging.info("")
+
+    def _ensure_btn_co(self):
+        if getattr(self, "_btn_co", None) is None:
+            from evdev import ecodes as E
+            def _emit_btn(code, val):
+                try:
+                    self.ui.write(E.EV_KEY, int(code), 1 if val else 0)
+                except Exception:
+                    logging.exception("[btn_co] emit failed (code=%r val=%r)", code, val)
+            self._btn_co = _ButtonCoalesce(_emit_btn)
+
+    def _handle_key_event(self, src_tag, ev, keymap=None, gear_mapper=None):
+        """
+        EV_KEY を TSV マッピングで仮想ボタンへ写像し、_ButtonCoalesce で OR 合流。
+        Keymap/GearMapper が先に消費した場合は何もしない。
+        """
+        from evdev import ecodes as E
+
+        kcode = int(ev.code)
+        down  = (int(ev.value) != 0)
+
+        # 1) 既存の Keymap / GearMapper が食うなら優先
+        try:
+            if keymap and keymap.handle_event(src_tag, ev):
+                return
+        except Exception:
+            pass
+        try:
+            if gear_mapper and gear_mapper.on_key(src_tag, ev):
+                return
+        except Exception:
+            pass
+
+        # 2) TSV マッピング：物理 (KEY, code) -> 仮想 vcode（多対一 OK）
+        vcode = None
+        try:
+            if hasattr(self, "map_src2virt_key") and self.map_src2virt_key:
+                vcode = self.map_src2virt_key.get(("KEY", kcode))
+        except Exception:
+            vcode = None
+
+        if vcode is not None:
+            # OR 合流：どれか1つでも押下があれば1、全て離れれば0
+            # src 区別のため (src_tag, 物理コード) を材料にするが、_ButtonCoalesce 側では参照しない
+            self._ensure_btn_co()
+            self._btn_co.on(int(vcode), (str(src_tag), kcode), bool(down))
+            self.ui.syn()
+            return
+
+        # 3) フォールバック：マッピングなし → そのまま通す
+        self.ui.write(E.EV_KEY, kcode, 1 if down else 0)
+        self.ui.syn()
 
     def center_all_axes(self):
         abs_caps = self.ui.ui_caps.get(ecodes.EV_ABS, [])
@@ -3465,6 +4002,13 @@ class UnderSteer:
                                 self.gear_mapper.emit_to(self.ui)
                             # ここでは元イベントは流さない
                     else:
+                        # 物理(KEY, code) → 仮想 vcode
+                        vcode = self.map_src2virt_key.get(("KEY", int(ev.code))) if getattr(self, "map_src2virt_key", None) else None
+                        if vcode is not None:
+                            self._btn_co.update(int(vcode), bool(int(ev.value) != 0))  # ← OR合流（押下カウント方式）
+                            self.ui.syn()
+                            continue  # ← ここが肝。仮想に流したら元のキーは出さない
+                        # フォールバック（マップに無ければ従来どおり）
                         self.ui.emit(ev.type, ev.code, ev.value)
 
                 elif ev.type == ecodes.EV_ABS:
@@ -3473,10 +4017,42 @@ class UnderSteer:
                     v_scaled = v
                     #if v in (-1, 0, 1):  # HATなどの軸範囲が -1〜1 の場合
                     #    v *= 32767  （削除：スケーラに任せる）
-                    vabs = self._map_src_abs_to_virtual(src_tag, ev.code)
-                    if vabs is None:
-                        print("Error: 想定外")
+                    routed = False
+                    if self._hat_co and (src_tag, "ABS", int(ev.code)) in self.mapping_src2virt:
+                        for vname in self.mapping_src2virt[(src_tag, "ABS", int(ev.code))]:
+                            if vname in ("ABS_HAT0X","ABS_HAT0Y"):
+                                vcode = getattr(ecodes, vname, None)
+                                if isinstance(vcode, int):
+                                    self._hat_co.on(vname, vcode, src_tag, int(ev.code), int(v))
+                                    routed = True
+                    if routed:
                         continue
+                    # ① TSVの軸割り当て（map_src2virt_abs）を最優先
+                    vabs = None
+                    if getattr(self, "map_src2virt_abs", None):
+                        vabs = self.map_src2virt_abs.get((src_tag, int(ev.code)))
+                        logging.warning(f"v-abs: {vabs}")
+                    # ② 無ければ従来の恒等マップにフォールバック
+                    if vabs is None:
+                        vabs = self._map_src_abs_to_virtual(src_tag, ev.code)
+                        logging.warning(f"v-absフォールバック {src_tag}/{ev.code}: {vabs}")
+                    # REVERSE 指定があれば反転（axisMappings を参照）
+                    try:
+                        ent = _findReverseOption(axisMappings, src_tag, ev.code)  # 下で定義
+                        logging.debug(ent)
+                        logging.debug(ent.get("reverse"))
+                        if ent and ent.get("reverse"):
+                            
+                            try:
+                                ai = src.absinfo(int(ev.code))
+                                smin, smax = int(ai.min), int(ai.max)
+                            except Exception:
+                                # フォールバック（必要に応じて環境に合わせて調整）
+                                smin, smax = 0, 1023
+                            v = invertRawValue(int(v), smin, smax)
+                    except Exception:
+                        pass
+
                     # スケール
                     v_scaled = self._scale_abs_to_virtual(src_tag, ev.code, vabs, v)
                     self.ui.emit(E.EV_ABS, vabs, v_scaled)
@@ -3496,6 +4072,13 @@ class UnderSteer:
         except asyncio.CancelledError:
             # キャンセルで抜ける
             raise
+        except OSError as e:
+            import errno
+            if e.errno == errno.ENODEV:  # 19: No such device
+                logging.warning("Input disconnected: %s (%s)", src_tag, e)
+                logging.warning(f"{ev.type}/{ev.code}")
+            else:
+                logging.exception("read_loop error on %s", src_tag)
         finally:
             try:
                 src.close()       # これで read が確実に目を覚まして終わる
@@ -3821,6 +4404,16 @@ def build_argparser():
     p.add_argument("--ignore-ffb", help="Ignore FFB Effect No.")
     p.add_argument("--no-grab", action="store_true", help="物理デバイスを grab しない")
     p.add_argument("--gear-map", help="ギア定義ファイルのパス（ボタン名一覧）を指定すると標準ギア出力を合成（G1..G8→BTN_0..BTN_7、N→BTN_DEAD）")
+
+    # === マッピングTSV ===
+    p.add_argument("--export-mapping", action="store_true",
+                   help="検出されたデフォルトの軸/ボタン配線をTSVに出力（行の並べ替え＋空行で合流）")
+    p.add_argument("--mapping-axes", default="mapping_axes.tsv",
+                   help="軸マッピングTSV（空行でグループ化。上から順に仮想へ割当）")
+    p.add_argument("--mapping-buttons", default="mapping_buttons.tsv",
+                   help="ボタンマッピングTSV（空行でグループ化。上から順に仮想へ割当）")
+    p.add_argument("--mapping-mode", choices=["priority","last"], default="priority",
+                   help="HAT合流の挙動: priority=グループ内の上から順 / last=最後に動いたソース")
     p.add_argument("--keymap", help="ボタン→キーストロークのTSVファイル")
     p.add_argument("--keymap-source", choices=["wheel","shift","both"], default="both",
                     help="キーボード送出の対象元（wheel/shift/both）")
@@ -4013,6 +4606,107 @@ async def main():
         keymap = KeymapTSV(Path(args.keymap))
         print(f"INFO: [keymap] entries={len(keymap.watch_codes)}")
         print(f"INFO: [keymap] entries={len(keymap.watch_names)}")
+    
+    # ========== マッピングTSV 入出力/合流実装 ==========
+    VIRTUAL_AXES_ORDER = ["ABS_X","ABS_Y","ABS_Z","ABS_RX","ABS_RY","ABS_RZ","ABS_THROTTLE","ABS_RUDDER","ABS_HAT0X","ABS_HAT0Y"]
+    VIRTUAL_BUTTONS_ORDER = ["BTN_TRIGGER","BTN_THUMB","BTN_THUMB2","BTN_TOP","BTN_TOP2","BTN_PINKIE","BTN_BASE","BTN_BASE2","BTN_BASE3","BTN_BASE4","BTN_BASE5","BTN_BASE6","BTN_0","BTN_1","BTN_2","BTN_3","BTN_4","BTN_5","BTN_6","BTN_7","BTN_8","BTN_9","BTN_DEAD"]
+
+    def _get_js_index_for_event(event_path: str) -> int | None:
+        import glob
+        try:
+            base = os.path.basename(event_path)
+            sys_event = f"/sys/class/input/{base}"
+            dev_dir = os.path.realpath(os.path.join(sys_event, "device"))
+            for js in glob.glob(os.path.join(dev_dir, "../../js*")) + glob.glob(os.path.join(dev_dir, "js*")):
+                m = re.search(r"js(\d+)$", js)
+                if m:
+                    return int(m.group(1))
+        except Exception:
+            pass
+        try:
+            ev = InputDevice(event_path)
+            name = ev.name
+            for jsn in glob.glob("/dev/input/js*"):
+                j = InputDevice(jsn)
+                if j.name == name:
+                    m = re.search(r"/js(\d+)$", jsn)
+                    if m:
+                        return int(m.group(1))
+        except Exception:
+            pass
+        return None
+
+    def _write_map_header(f, kind: str):
+        if kind == "axes":
+            f.write("# VIRTUAL_AXES_ORDER: " + ", ".join(VIRTUAL_AXES_ORDER) + "\n")
+        else:
+            f.write("# VIRTUAL_BUTTONS_ORDER: " + ", ".join(VIRTUAL_BUTTONS_ORDER) + "\n")
+        f.write("# 並び替えガイド: 上から順 / 空行=グループ区切り（同一仮想へ合流）\n")
+        f.write("# 列: js_index\tdevice_name\tsrc_tag\tsrc_type\tsrc_code_name\tsrc_code\tdefault_virtual\n")
+
+    def export_default_mapping(wheel_info, shifter_info, axes_path: str, btns_path: str):
+        import csv
+        rows_axes, rows_btns = [], []
+        def _push(devinfo, tag: str):
+            if not devinfo or not getattr(devinfo, "dev", None):
+                return
+            dev = devinfo.dev
+            try:
+                caps = dev.capabilities(verbose=True, absinfo=True)
+            except Exception:
+                caps = dev.capabilities(verbose=True)
+            js_index = _get_js_index_for_event(getattr(devinfo, "path", None) or getattr(dev, "fn", None) or devinfo.dev.path)
+            name = (getattr(devinfo, "name", None) or getattr(dev, "name", None) or "Unknown")
+            for item in caps.get(ecodes.EV_ABS, []):
+                code_name = str(item[0]) if isinstance(item, (list, tuple)) else str(item)
+                try:
+                    code = int(getattr(ecodes, code_name))
+                except Exception:
+                    code = int(item[0]) if isinstance(item, (list, tuple)) and isinstance(item[0], int) else -1
+                rows_axes.append([js_index if js_index is not None else -1, name, tag, "ABS", code_name, code, code_name, "NORMAL"])
+            for item in caps.get(ecodes.EV_KEY, []):
+                code_name = str(item[0]) if isinstance(item, (list, tuple)) else str(item)
+                if not code_name.startswith("BTN_"): 
+                    continue
+                try:
+                    code = int(getattr(ecodes, code_name))
+                except Exception:
+                    code = -1
+                rows_btns.append([js_index if js_index is not None else -1, name, tag, "KEY", code_name, code, code_name])
+        _push(wheel_info, "wheel")
+        _push(shifter_info, "shift")
+        with open(axes_path, "w", encoding="utf-8", newline="") as f:
+            _write_map_header(f, "axes")
+            w = __import__("csv").writer(f, delimiter="\t")
+            for r in rows_axes:
+                w.writerow(r); f.write("\n")
+        with open(btns_path, "w", encoding="utf-8", newline="") as f:
+            _write_map_header(f, "buttons")
+            w = __import__("csv").writer(f, delimiter="\t")
+            for r in rows_btns:
+                w.writerow(r); f.write("\n")
+        print(f"[mapping] exported: {axes_path}, {btns_path}")
+
+    def _load_grouped(path: str):
+        groups, cur = [], []
+        if not os.path.exists(path): return groups
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#"): continue
+                if not line.strip():
+                    if cur: groups.append(cur); cur=[]
+                    continue
+                cols = line.rstrip("\n").split("\t"); cols += ["" for _ in range(max(0,7-len(cols)))]
+                try:
+                    cols[0] = int(cols[0]) if str(cols[0]).strip().isdigit() else -1
+                    cols[5] = int(cols[5]) if str(cols[5]).strip().isdigit() else -1
+                except Exception: pass
+                cur.append(cols[:7])
+        if cur: groups.append(cur)
+        return groups
+
+    mapping_virt2src, mapping_src2virt = {}, {}
+
     app = UnderSteer(
         wheel_info, shifter_info,
         ff_passthrough=args.ff_pass_through,
@@ -4022,7 +4716,10 @@ async def main():
         keymap_source=args.keymap_source,
         echo_buttons=args.echo_buttons,
         echo_buttons_tsv=args.echo_buttons_tsv,
-        args=args  # ← 引数を明示的に渡す！
+        args=args,  # ← 引数を明示的に渡す！
+        mapping_virt2src=mapping_virt2src,
+        mapping_src2virt=mapping_src2virt,
+        mapping_mode=args.mapping_mode
     )
 
     loop = asyncio.get_running_loop()

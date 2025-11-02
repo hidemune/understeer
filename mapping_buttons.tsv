@@ -1,0 +1,116 @@
+# VIRTUAL_BUTTONS_ORDER: BTN_PINKIE, BTN_TOP2, BTN_TOP, BTN_THUMB2, BTN_TRIGGER, BTN_THUMB, BTN_BASE, BTN_BASE2, BTN_0, BTN_BASE4, BTN_BASE3,     BTN_BASE5, BTN_BASE6, BTN_1, BTN_2, BTN_3, BTN_4, BTN_5, BTN_6, BTN_7, BTN_8, BTN_9, BTN_DEAD
+# 並び替えガイド: 上から順に割当 / 空行=グループ区切り（同一仮想へ合流）
+# 列: js_index	device_name	src_tag	src_type	src_code_name	src_code	default_virtual	js_index_in_js
+# A
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_293	293	KEY_293	5
+1	HyperX Clutch Tanto	shift	KEY	KEY_304	304	KEY_304	0
+#? (auto-assigned to BTN_PINKIE; edit if needed)
+
+# B
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_292	292	KEY_292	4
+1	HyperX Clutch Tanto	shift	KEY	KEY_305	305	KEY_305	1
+#? (auto-assigned to BTN_TOP2; edit if needed)
+
+# X
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_291	291	KEY_291	3
+1	HyperX Clutch Tanto	shift	KEY	KEY_307	307	KEY_307	2
+#? (auto-assigned to BTN_TOP; edit if needed)
+
+# Y
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_290	290	KEY_290	2
+1	HyperX Clutch Tanto	shift	KEY	KEY_308	308	KEY_308	3
+#? (auto-assigned to BTN_THUMB2; edit if needed)
+
+# LB
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_288	288	KEY_288	0
+1	HyperX Clutch Tanto	shift	KEY	KEY_310	310	KEY_310	4
+#? (auto-assigned to BTN_TRIGGER; edit if needed)
+
+# RB
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_289	289	KEY_289	1
+1	HyperX Clutch Tanto	shift	KEY	KEY_311	311	KEY_311	5
+#? (auto-assigned to BTN_THUMB; edit if needed)
+
+# Select
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_294	294	KEY_294	6
+1	HyperX Clutch Tanto	shift	KEY	KEY_314	314	KEY_314	6
+#? (auto-assigned to BTN_BASE; edit if needed)
+
+# Start
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_295	295	KEY_295	7
+1	HyperX Clutch Tanto	shift	KEY	KEY_315	315	KEY_315	7
+#? (auto-assigned to BTN_BASE2; edit if needed)
+
+# Guide
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_300	300	KEY_300	12
+1	HyperX Clutch Tanto	shift	KEY	KEY_316	316	KEY_316	8
+#? (auto-assigned to BTN_0; edit if needed)
+
+# L StickB
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_297	297	KEY_297	9
+1	HyperX Clutch Tanto	shift	KEY	KEY_317	317	KEY_317	9
+#? (auto-assigned to BTN_BASE4; edit if needed)
+
+# R StickB
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_296	296	KEY_296	8
+1	HyperX Clutch Tanto	shift	KEY	KEY_318	318	KEY_318	10
+#? (auto-assigned to BTN_BASE3; edit if needed)
+
+
+
+
+
+
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_298	298	KEY_298	10
+#? (auto-assigned to BTN_BASE5; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_299	299	KEY_299	11
+#? (auto-assigned to BTN_BASE6; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_301	301	KEY_301	13
+#? (auto-assigned to BTN_1; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_302	302	KEY_302	14
+#? (auto-assigned to BTN_2; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_303	303	KEY_303	15
+#? (auto-assigned to BTN_3; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_704	704	KEY_704	16
+#? (auto-assigned to BTN_4; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_705	705	KEY_705	17
+#? (auto-assigned to BTN_5; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_706	706	KEY_706	18
+#? (auto-assigned to BTN_6; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_707	707	KEY_707	19
+#? (auto-assigned to BTN_7; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_708	708	KEY_708	20
+#? (auto-assigned to BTN_8; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_709	709	KEY_709	21
+#? (auto-assigned to BTN_9; edit if needed)
+
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_710	710	KEY_710	22
+#? (auto-assigned to BTN_DEAD; edit if needed)
+
+# --- EXTRA CANDIDATES (not auto-assigned) ---
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_711	711	KEY_711	23
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_712	712	KEY_712	24
+#? 3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	KEY	KEY_713	713	KEY_713	25
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_256	256	KEY_256	0
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_257	257	KEY_257	1
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_258	258	KEY_258	2
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_259	259	KEY_259	3
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_260	260	KEY_260	4
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_261	261	KEY_261	5
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_262	262	KEY_262	6
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_263	263	KEY_263	7
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_264	264	KEY_264	8
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_265	265	KEY_265	9
+#? 2	VelocityOne Multi-Shift VelocityOne Multi-Shift	shift	KEY	KEY_266	266	KEY_266	10
+
