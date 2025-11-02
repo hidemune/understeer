@@ -63,6 +63,46 @@ def _resolveAbsCode(code_or_name):
         return int(s.split("_",1)[1])
     return EC_ABS.get(s, None)
 
+from evdev.ecodes import ecodes as EC  # 名前→コードの総合辞書
+
+def _resolveKeyCode(code_or_name):
+    """
+    'KEY_A' / 'BTN_SOUTH' / 'BTN_0' / 'BTN0' / 304 / 0x130 → int
+    見つからなければ None を返す。
+    """
+    # すでに数値ならそのまま
+    if isinstance(code_or_name, int):
+        return code_or_name
+
+    # 文字列へ正規化
+    s = str(code_or_name).strip().upper()
+    if not s:
+        return None
+
+    # 数値表現（10進/16進）を許容
+    try:
+        if s.startswith("0X"):
+            return int(s, 16)
+        if s.isdigit():
+            return int(s, 10)
+    except Exception:
+        pass
+
+    # 記号ゆらぎを吸収（- を _ に、連続 _ を1つに）
+    s = s.replace("-", "_")
+    while "__" in s:
+        s = s.replace("__", "_")
+
+    # よくある略記の吸収: 'BTN0' → 'BTN_0'
+    if s.startswith("BTN") and not s.startswith("BTN_"):
+        # 例: BTN0 / BTN1 / BTN_SOUTH はそのまま
+        tail = s[3:]
+        if tail and tail[0].isdigit():
+            s = "BTN_" + tail
+
+    # ここまで整えた名前で evdev の総合辞書を引く
+    return EC.get(s, None)
+
 def _findReverseOption(axisMappings, srcTag: str, srcCode: int):
     """
     axisMappings から srcTag × srcCode に合致する行を探し、
@@ -241,7 +281,15 @@ except NameError:
 try:
     VIRTUAL_BUTTONS_ORDER
 except NameError:
-    VIRTUAL_BUTTONS_ORDER = ["BTN_TRIGGER","BTN_THUMB","BTN_THUMB2","BTN_TOP","BTN_TOP2","BTN_PINKIE","BTN_BASE","BTN_BASE2","BTN_BASE3","BTN_BASE4","BTN_BASE5","BTN_BASE6","BTN_0","BTN_1","BTN_2","BTN_3","BTN_4","BTN_5","BTN_6","BTN_7","BTN_8","BTN_9","BTN_DEAD"]
+    VIRTUAL_BUTTONS_ORDER = ["BTN_A", "BTN_B", "BTN_X", "BTN_Y", 
+    "BTN_TL", "BTN_TR", "BTN_SELECT", "BTN_START", "BTN_MODE", "BTN_THUMBL", "BTN_THUMBR", 
+    
+    "BTN_TRIGGER", "BTN_THUMB", "BTN_THUMB2", "BTN_TOP", "BTN_TOP2", 
+    
+    "BTN_PINKIE", "BTN_BASE", "BTN_BASE2", "BTN_BASE3", "BTN_BASE4",
+    "BTN_BASE5", "BTN_BASE6", 
+    "BTN_0", "BTN_1", "BTN_2", "BTN_3", "BTN_4", "BTN_5", 
+    "BTN_6", "BTN_7", "BTN_8", "BTN_9", "BTN_DEAD"]
 
 # --- routing builder ---
 def build_routing_from_tsv(axes_path: str|None, btns_path: str|None):
@@ -3381,27 +3429,6 @@ def merge_capabilities(
             # すでにある場合は先勝ちで何もしない
             if code in abs_list:
                 pass
-                """
-                cur = abs_list[code]
-                lo = min(cur.min, absinfo.min)
-                hi = max(cur.max, absinfo.max)
-                fuzz = 0 if zero_fuzz else max(cur.fuzz, absinfo.fuzz)
-                flat = 0 if force_flat0 else absinfo.flat
-                dst_min, dst_max = absinfo.min, absinfo.max
-                mul = 1
-                # 物理が -1..1（または 0..1）の「正規化済み」軸なら仮想側で 16bit レンジへ拡大
-                if absinfo.min == -1 and absinfo.max == 1:
-                    dst_min, dst_max, mul = -32767, 32767, 32767
-                elif absinfo.min == 0 and absinfo.max == 1:
-                    dst_min, dst_max, mul = 0, 32767, 32767
-                abs_list[code] = AbsInfo(value=0, min=lo, max=hi,
-                                          fuzz=fuzz,
-                                          flat=0,
-                                          resolution=max(cur.resolution, absinfo.resolution))
-                # 後段のイベント拡大用メモ
-                if us is not None and mul != 1:
-                    us._axis_scale[code] = (absinfo.min, absinfo.max, mul)
-                """
             else:
                 # 新規登録時も flat=0 / fuzz=0 に正規化
                 fuzz = 0 if zero_fuzz else absinfo.fuzz
@@ -3426,6 +3453,7 @@ def merge_capabilities(
             else:
                 keys.add(code)
 
+    # ホイール・シフター それぞれ取得
     take_abs(cap_w); take_abs(cap_s)
     take_keys(cap_w); take_keys(cap_s)
 
@@ -3446,18 +3474,6 @@ def merge_capabilities(
                     ff_features_set.update(item)
                 else:
                     ff_features_set.add(item)
-        """
-        if not ff_features_set:
-            ff_features_set = {
-                ecodes.FF_RUMBLE,
-                ecodes.FF_CONSTANT, ecodes.FF_SPRING, ecodes.FF_DAMPER,
-                ecodes.FF_GAIN, ecodes.FF_AUTOCENTER,
-            }
-        if us.ff_passthrough_easy:
-            ff_features_set = {
-                ecodes.FF_GAIN, ecodes.FF_AUTOCENTER,
-            }
-        """
         ff_features = sorted(list(ff_features_set))
         print("")
         logging.debug("ff_features")
@@ -3993,7 +4009,7 @@ class UnderSteer:
 
                 if ev.type == ecodes.EV_KEY:
                     # 【Shift の場合】
-                    if src_tag == "shift" and self.gear_mapper and ev.type == ecodes.EV_KEY:
+                    if src_tag == "shift" and self.gear_mapper:
                         # ギア関連キーであれば吸収 → 標準化出力に置換
                         changed = self.gear_mapper.feed_input_key(ev.code, ev.value)
                         # “ギア定義に含まれるキー”は素通し抑止
@@ -4001,15 +4017,37 @@ class UnderSteer:
                             if changed:
                                 self.gear_mapper.emit_to(self.ui)
                             # ここでは元イベントは流さない
+                        else:
+                            # 【Xbox360 の場合】
+                            # 物理(KEY, code) → 仮想 vcode
+                            vcode = self.map_src2virt_key.get((src_tag, int(ev.code))) if getattr(self, "map_src2virt_key", None) else None
+                            if vcode is not None:
+                                #self._btn_co.update(int(vcode), bool(int(ev.value) != 0))  # ← OR合流（押下カウント方式）
+                                #self.ui.syn()
+                                logging.warning(f"box/src_tag: {src_tag}")
+                                logging.warning(f"box/vcode: {vcode}")
+                                logging.warning(f"box/ev.value: {ev.value}")
+                                vnamecode = VIRTUAL_BUTTONS_ORDER[vcode]
+                                self.ui.emit(E.EV_KEY, _resolveKeyCode(vnamecode), ev.value)
+                                continue
+                            # フォールバック（マップに無ければ従来どおり）
+                            self.ui.emit(E.EV_KEY, ev.code, ev.value)
+
                     else:
                         # 物理(KEY, code) → 仮想 vcode
-                        vcode = self.map_src2virt_key.get(("KEY", int(ev.code))) if getattr(self, "map_src2virt_key", None) else None
+                        vcode = self.map_src2virt_key.get((src_tag, int(ev.code))) if getattr(self, "map_src2virt_key", None) else None
                         if vcode is not None:
-                            self._btn_co.update(int(vcode), bool(int(ev.value) != 0))  # ← OR合流（押下カウント方式）
-                            self.ui.syn()
-                            continue  # ← ここが肝。仮想に流したら元のキーは出さない
+                            #self._btn_co.update(int(vcode), bool(int(ev.value) != 0))  # ← OR合流（押下カウント方式）
+                            #self.ui.syn()
+                            logging.warning(f"src_tag: {src_tag}")
+                            logging.warning(f"ev.code: {ev.code} -> {vcode}")
+                            logging.warning(f"ev.value: {ev.value}")
+                            vnamecode = VIRTUAL_BUTTONS_ORDER[vcode]
+                            logging.warning(f"vnamecode: {vnamecode} ({_resolveKeyCode(vnamecode)})")
+                            self.ui.emit(E.EV_KEY, _resolveKeyCode(vnamecode), ev.value)
+                            continue
                         # フォールバック（マップに無ければ従来どおり）
-                        self.ui.emit(ev.type, ev.code, ev.value)
+                        self.ui.emit(E.EV_KEY, ev.code, ev.value)
 
                 elif ev.type == ecodes.EV_ABS:
                     v = ev.value
@@ -4608,9 +4646,6 @@ async def main():
         print(f"INFO: [keymap] entries={len(keymap.watch_names)}")
     
     # ========== マッピングTSV 入出力/合流実装 ==========
-    VIRTUAL_AXES_ORDER = ["ABS_X","ABS_Y","ABS_Z","ABS_RX","ABS_RY","ABS_RZ","ABS_THROTTLE","ABS_RUDDER","ABS_HAT0X","ABS_HAT0Y"]
-    VIRTUAL_BUTTONS_ORDER = ["BTN_TRIGGER","BTN_THUMB","BTN_THUMB2","BTN_TOP","BTN_TOP2","BTN_PINKIE","BTN_BASE","BTN_BASE2","BTN_BASE3","BTN_BASE4","BTN_BASE5","BTN_BASE6","BTN_0","BTN_1","BTN_2","BTN_3","BTN_4","BTN_5","BTN_6","BTN_7","BTN_8","BTN_9","BTN_DEAD"]
-
     def _get_js_index_for_event(event_path: str) -> int | None:
         import glob
         try:
