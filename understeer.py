@@ -52,6 +52,74 @@ from evdev.ecodes import ABS
 
 from evdev.ecodes import ABS as EC_ABS
 
+import os
+from collections import defaultdict
+
+# =========================
+# Button merge debugger/logic
+# =========================
+class ButtonMerger:
+    """
+    複数ソース→同一仮想ボタンの合流器。
+    ・OR論理：active_count[vcode] > 0 なら仮想は押下
+    ・エッジ検出：source_edge[(stype,scode)] で直前状態を保持
+    """
+    def __init__(self, debug: bool = False, name_resolver=None):
+        self.debug = debug
+        self._active_count = defaultdict(int)         # vcode -> active sources
+        self._src_state = {}                          # (stype,scode) -> 0/1
+        self._name = name_resolver or (lambda code: f"BTN_{code}")
+
+    def reset(self):
+        self._active_count.clear()
+        self._src_state.clear()
+
+    def update(self, src_key, vcode: int, pressed: int, now_ms: int = 0):
+        """
+        src_key: ("KEY", scode) 等、物理キー識別子
+        pressed: 1/0
+        戻り値: [(vcode, new_state)] が必要なら1件返す。状態不変なら []。
+        """
+        prev_src = self._src_state.get(src_key, 0)
+        if prev_src == pressed:
+            # 物理側で状態変化なし（抑制）
+            if self.debug:
+                print(f"[MERGE] src unchanged {src_key}={pressed} v:{vcode} "
+                      f"active={self._active_count.get(vcode,0)}")
+            return []
+
+        self._src_state[src_key] = pressed
+        # カウント更新
+        if pressed:
+            self._active_count[vcode] += 1
+        else:
+            self._active_count[vcode] = max(0, self._active_count[vcode]-1)
+
+        active = self._active_count[vcode]
+        new_v_state = 1 if active > 0 else 0
+        # 仮想の前状態を推定：active>1→押下継続、active==1→今回で押下、active==0→今回で解放
+        # ただし確実にエッジでのみ発火
+        emit = []
+        # 前状態は active 変更前に推定したいが、カウンタ方式では簡便化：
+        #   (pressed=1 で active==1) => 押下エッジ
+        #   (pressed=0 で active==0) => 解放エッジ
+        if pressed and active == 1:
+            emit = [(vcode, 1)]
+        elif (not pressed) and active == 0:
+            emit = [(vcode, 0)]
+
+        if self.debug:
+            vname = self._name(vcode)
+            print(f"[MERGE] src {src_key} -> {vname} {'DOWN' if pressed else 'UP'}  "
+                  f"active={active}  emit={emit}")
+        return emit
+
+    def dump_state(self):
+        return {
+            "active_count": dict(self._active_count),
+            "sources": {str(k): v for k, v in self._src_state.items()},
+        }
+
 def _resolveAbsCode(code_or_name):
     """ 'ABS_2' / 'ABS_THROTTLE' / 2 → int （失敗 None）"""
     if isinstance(code_or_name, int):
@@ -298,49 +366,59 @@ def build_routing_from_tsv(axes_path: str|None, btns_path: str|None):
     戻り:
       virt2src: dict[str vname] -> list[(src_type, src_code)]
       src2virt: dict[(src_type, src_code)] -> list[str vname]
-      map_src2virt_abs: dict[("ABS", code)] -> int vcode
-      map_src2virt_key: dict[("KEY", code)] -> int vcode
+      map_src2virt_abs: dict[("ABS", code)] -> int vcode   # 仮想“出現順”インデックス
+      map_src2virt_key: dict[("KEY", code)] -> int vcode   # 仮想“出現順”インデックス
     """
-    logging.info("build_routing_from_tsv {axes_path} {btns_path}")
+    logging.info(f"build_routing_from_tsv axes={axes_path} btns={btns_path}")
     from evdev import ecodes as _EC
     axes_groups   = _parse_mapping_tsv(axes_path) if axes_path else []
     button_groups = _parse_mapping_tsv(btns_path) if btns_path else []
 
     virt2src, src2virt = {}, {}
-    # 仮想→物理 / 物理→仮想（名前）
-    for i, grp in enumerate(axes_groups):
-        logging.info(f"axes_groups / {i} {grp}")
-        if i >= len(axes_groups): break
-        vname = VIRTUAL_AXES_ORDER[grp[0][2]]
-        logging.info(f"vname / {vname}")
-        lst=[]
-        for (stype, scode, vcode) in grp:
-            scode=int(scode); lst.append((stype, scode))
-            src2virt.setdefault((stype, scode), []).append(vname)
-        virt2src[vname]=lst
-    for i, grp in enumerate(button_groups):
-        logging.info(f"button_groups / {i} {grp}")
-        if i >= len(VIRTUAL_BUTTONS_ORDER): break
-        vname = VIRTUAL_BUTTONS_ORDER[grp[0][2]]
-        logging.info(f"vname / {vname}")
-        lst=[]
-        for (stype, scode, vcode) in grp:
-            scode=int(scode); lst.append((stype, scode))
-            src2virt.setdefault((stype, scode), []).append(vname)
-        virt2src[vname]=lst
 
-    # 実 emit 用（数値仮想コード）
+    # ---- helpers ---------------------------------------------------------
+    def _build_one(kind: str, groups: list, vorder: list[str],
+                   virt2src_out: dict, src2virt_out: dict,
+                   map_out: dict):
+        """
+        kind: "ABS" or "KEY"
+        groups: [ [(stype, scode, group_id), ...], ... ]
+        vorder: VIRTUAL_AXES_ORDER or VIRTUAL_BUTTONS_ORDER
+        map_out: dict[((stype, scode))] -> int vcode (== group_id)
+        """
+        for gi, grp in enumerate(groups):
+            if not grp:
+                continue
+
+            # group_id 一致チェック
+            gid_set = {int(t[2]) for t in grp}
+            if len(gid_set) != 1:
+                logging.warning(f"{kind}: group[{gi}] has mixed group_id: {gid_set} -> skip")
+                continue
+            group_id = gid_set.pop()
+
+            # 範囲チェック
+            if group_id < 0 or group_id >= len(vorder):
+                logging.warning(f"{kind}: group[{gi}] group_id {group_id} out of range (0..{len(vorder)-1}) -> skip")
+                continue
+
+            vname = vorder[group_id]
+            logging.info(f"{kind}: group[{gi}] -> vname={vname} (group_id={group_id})")
+
+            # 仮想→物理 / 物理→仮想
+            lst = []
+            for (stype, scode, _gid) in grp:
+                scode = int(scode)
+                lst.append((stype, scode))
+                src2virt_out.setdefault((stype, scode), []).append(vname)
+                # emit 用（数値仮想コード）: group_id をそのまま使う
+                map_out[(stype, scode)] = int(group_id)
+            virt2src_out[vname] = lst
+
+    # ---- build axes / buttons -------------------------------------------
     map_src2virt_abs, map_src2virt_key = {}, {}
-    for i, vname in enumerate(VIRTUAL_AXES_ORDER):
-        if i >= len(axes_groups): break
-        
-        for (stype, scode, vcode) in axes_groups[i]:
-            map_src2virt_abs[(stype, int(scode))]=int(vcode)
-    for i, vname in enumerate(VIRTUAL_BUTTONS_ORDER):
-        if i >= len(button_groups): break
-        
-        for (stype, scode, vcode) in button_groups[i]:
-            map_src2virt_key[(stype, int(scode))]=int(vcode)
+    _build_one("ABS", axes_groups,   VIRTUAL_AXES_ORDER,   virt2src, src2virt, map_src2virt_abs)
+    _build_one("KEY", button_groups, VIRTUAL_BUTTONS_ORDER, virt2src, src2virt, map_src2virt_key)
 
     return virt2src, src2virt, map_src2virt_abs, map_src2virt_key
 
@@ -3484,8 +3562,28 @@ def merge_capabilities(
     if force_keys:
         keys.update(force_keys)
 
+    # --- キー並びの決定 ---
+    #（要件）キーマッピングが指定されているときだけ、TSV出現順でボタンインデックスを固定したい
+    # us.mapping_virt2src は build_routing_from_tsv() で生成され、辞書の挿入順＝TSV出現順を保持
+    key_list: List[int]
+    if us is not None and getattr(us, "mapping_virt2src", None):
+        # 1) TSVの仮想ボタン名順（例: "BTN_0", "BTN_1", ...）をコードへ
+        ordered_codes: List[int] = []
+        seen = set()
+        for vname in us.mapping_virt2src.keys():
+            code = _resolveKeyCode(vname)
+            if code is not None and code not in seen:
+                ordered_codes.append(code)
+                seen.add(code)
+        # 2) マッピングに含まれない残り（物理のunionなど）を末尾へ
+        remaining = [k for k in sorted(list(keys)) if k not in seen]
+        key_list = ordered_codes + remaining
+    else:
+        # マッピング未指定時は従来通りソートでOK
+        key_list = sorted(list(keys))
+
     ui_caps: Dict[int, List] = {
-        ecodes.EV_KEY: sorted(list(keys)),
+        ecodes.EV_KEY: key_list,
         ecodes.EV_ABS: [(code, absinfo) for code, absinfo in abs_list.items()],
     }
     
@@ -3634,6 +3732,17 @@ class UnderSteer:
             self.map_src2virt_key = {}
 
         self._ensure_btn_co()
+
+        # --- デバッグフラグ（環境変数 or CLIで拡張してもOK） ---
+        self.debug_merge = bool(int(os.getenv("UNDERSTEER_DEBUG_MERGE", "0")))
+        # コード→表示名の解決（任意）
+        def _btn_name(code:int):
+            try:
+                from evdev import ecodes as E
+                return next((k for k,v in E.__dict__.items() if k.startswith("BTN_") and v==code), f"BTN_{code}")
+            except Exception:
+                return f"BTN_{code}"
+        self._button_merger = ButtonMerger(debug=self.debug_merge, name_resolver=_btn_name)
 
         # --- Button coalesce の初期化（常時作っておく） ---
         def _emit_key(code, val):
@@ -3828,42 +3937,20 @@ class UnderSteer:
         EV_KEY を TSV マッピングで仮想ボタンへ写像し、_ButtonCoalesce で OR 合流。
         Keymap/GearMapper が先に消費した場合は何もしない。
         """
-        from evdev import ecodes as E
-
-        kcode = int(ev.code)
-        down  = (int(ev.value) != 0)
-
-        # 1) 既存の Keymap / GearMapper が食うなら優先
-        try:
-            if keymap and keymap.handle_event(src_tag, ev):
-                return
-        except Exception:
-            pass
-        try:
-            if gear_mapper and gear_mapper.on_key(src_tag, ev):
-                return
-        except Exception:
-            pass
-
-        # 2) TSV マッピング：物理 (KEY, code) -> 仮想 vcode（多対一 OK）
-        vcode = None
-        try:
-            if hasattr(self, "map_src2virt_key") and self.map_src2virt_key:
-                vcode = self.map_src2virt_key.get(("KEY", kcode))
-        except Exception:
-            vcode = None
-
-        if vcode is not None:
-            # OR 合流：どれか1つでも押下があれば1、全て離れれば0
-            # src 区別のため (src_tag, 物理コード) を材料にするが、_ButtonCoalesce 側では参照しない
-            self._ensure_btn_co()
-            self._btn_co.on(int(vcode), (str(src_tag), kcode), bool(down))
-            self.ui.syn()
+        # ev.code (物理), ev.value(0/1)
+        kcode = ev.code
+        val = 1 if ev.value else 0
+        vcode = self.map_src2virt_key.get(("KEY", kcode))
+        if vcode is None:
+            if self.debug_merge:
+                print(f"[MERGE] no mapping for KEY {kcode}")
             return
-
-        # 3) フォールバック：マッピングなし → そのまま通す
-        self.ui.write(E.EV_KEY, kcode, 1 if down else 0)
-        self.ui.syn()
+        # --- 合流器を通す ---
+        for (vc, new_state) in self._button_merger.update(("KEY", kcode), vcode, val):
+            self.ui.write(E.EV_KEY, vc, new_state)
+            self.ui.syn()
+            if self.debug_merge:
+                print(f"[MERGE] EMIT ui.write(EV_KEY, {vc}, {new_state})")
 
     def center_all_axes(self):
         abs_caps = self.ui.ui_caps.get(ecodes.EV_ABS, [])
@@ -4069,8 +4156,8 @@ class UnderSteer:
                     # ① TSVの軸割り当て（map_src2virt_abs）を最優先
                     vabs = None
                     if getattr(self, "map_src2virt_abs", None):
-                        vabs = self.map_src2virt_abs.get((src_tag, int(ev.code)))
-                        logging.warning(f"v-abs: {vabs}")
+                        # build_routing_from_tsv はキーを ("ABS", code) で格納する
+                        vabs = self.map_src2virt_abs.get(("ABS", int(ev.code)))
                     # ② 無ければ従来の恒等マップにフォールバック
                     if vabs is None:
                         vabs = self._map_src_abs_to_virtual(src_tag, ev.code)
