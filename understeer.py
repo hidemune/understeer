@@ -254,7 +254,8 @@ def _parse_mapping_tsv(path: str):
                 options = ""
                 opts_dict = []
             # ★ groups 用（ Type - src -virt ）
-            cur.append((src_tag, int(src_code), group_id))
+            #cur.append((src_tag, int(src_code), group_id))
+            cur.append((src_type, int(src_code), group_id))
 
             # ★ axisMappings 用（数値で保持・group_id付与）
             entry = {
