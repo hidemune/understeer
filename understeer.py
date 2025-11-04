@@ -298,40 +298,57 @@ def _parse_mapping_tsv(path: str):
                 continue
 
             cols = line.split("\t")
-            if len(cols) < 8:                   # ← ここ
-                continue
-            cols = cols[:9]
 
-            src_type = cols[3].strip().upper()                  # "ABS" or "KEY"
-            src_tag  = cols[2].strip().lower()                  # 'wheel'等
-            if src_tag not in ("wheel", "shift", "pad"):
-                # 列ズレ検知のために早期スキップ（ログ推奨）
-                logging.error(f"列ズレ検知  {path} ... 3rd col srcTag:{src_tag}")
-                continue
+            # 期待列: jsi, device_name, src_tag, src_type, src_code_name, src_code, default_virtual, jsi_in_js, options...
+            src_tag  = (cols[2] or "").strip().lower()       # 'wheel' | 'shift' | 'pad'
+            src_type = (cols[3] or "").strip().upper()       # 'ABS'   | 'KEY'
+            # 文字列名 or 数字どちらでも吸収（ABS/KEY を正しく解決）
+            src_code = _resolveKeyCode(cols[5] or cols[4]) if src_type == "KEY" else _toAbsCode(cols[5] or cols[4])
 
-            # 文字列名 or 数字どちらでも吸収
-            src_code = _toAbsCode(cols[5] or cols[4])
             if src_code is None:
                 continue
+            if len(cols) < 8:                   # ← ここ
+                continue
 
-            virt_code = group_id    #_toAbsCode(cols[6])     # default_virtual
+            # default_virtual（7列目）を“実コード”に解決（必ず ABS/BTN の数値コードにする）
+            dv = (cols[6] or "").strip()
+            # KEY は _resolveKeyCode、ABS は _toAbsCode
+            if src_type == "KEY":
+                src_code = _resolveKeyCode(cols[5] or cols[4])
+            else:
+                src_code = _toAbsCode(cols[5] or cols[4])
+            if virt_code is None:
+                # 未指定フォールバック（VIRTUAL_*_ORDER のラベル→実コードに解決）
+                if src_type == "KEY":
+                    name = VIRTUAL_BUTTONS_ORDER[group_id] if 0 <= group_id < len(VIRTUAL_BUTTONS_ORDER) else ""
+                    virt_code = _resolveKeyCode(name) if name else None
+                else:
+                    name = VIRTUAL_AXES_ORDER[group_id] if 0 <= group_id < len(VIRTUAL_AXES_ORDER) else ""
+                    virt_code = _toAbsCode(name) if name else None
+                if virt_code is None:
+                    logging.warning("TSV default_virtual 未指定/不正: group_id=%s src=%s %s → 行をスキップ",
+                                    group_id, src_tag, src_code)
+                    continue
+
+
             try:
                 options   = cols[8] or ""
                 opts_dict = parseOptionsCell(options)
             except:
                 options = ""
                 opts_dict = []
-            # ★ groups 用（ Type - src -virt ）
-            #cur.append((src_tag, int(src_code), group_id))
-            cur.append((src_type, int(src_code), group_id))
+            # ★ groups 用（ (src_tag, src_code, virt_code, src_type) ）← “実コード”を入れる！
+            cur.append((src_tag, int(src_code), int(virt_code), src_type))
 
-            # ★ axisMappings 用（数値で保持・group_id付与）
+            # ★ axisMappings 用（数値で保持・virt_codeを格納）
             entry = {
                 "group_id": group_id,
                 "device": cols[0],
+
                 "srcTag": src_tag,              # 'wheel' 等
                 "srcAbs": int(src_code),        # ★ 数値コードで保存！
-                "virtAbs": virt_code,           # ★ ここも数値に（必要に応じて None 可）
+                "virtAbs": int(virt_code),      # ★ 数値（= ABS/BTN のコード）
+
                 "note": cols[7],                # js_index_in_js
                 "options": opts_dict,           # {'reverse': True/False}
             }
@@ -370,55 +387,61 @@ def build_routing_from_tsv(axes_path: str|None, btns_path: str|None):
       map_src2virt_key: dict[("KEY", code)] -> int vcode   # 仮想“出現順”インデックス
     """
     logging.info(f"build_routing_from_tsv axes={axes_path} btns={btns_path}")
+
+    # 既知コード→記号名の逆引き（見つからなければ空文字）
+    def _ec_name_by_code(code: int, kind: str) -> str:
+        if kind == "ABS":
+            for k, v in _EC.__dict__.items():
+                if k.startswith("ABS_") and v == code:
+                    return k
+        else:
+            for k, v in _EC.__dict__.items():
+                if k.startswith("BTN_") and v == code:
+                    return k
+        return ""
+
     from evdev import ecodes as _EC
     axes_groups   = _parse_mapping_tsv(axes_path) if axes_path else []
     button_groups = _parse_mapping_tsv(btns_path) if btns_path else []
 
     virt2src, src2virt = {}, {}
+    # --- 仮想→物理 / 物理→仮想
+    #     TSV で格納した “virt_code=実コード(ABS/BTN)” をそのまま使う
+    for i, grp in enumerate(axes_groups):
+        if not grp:
+            continue
+        vcode = int(grp[0][2])  # = 実コード（ABS_* の値）
+        vname = _ec_name_by_code(vcode, "ABS") or f"ABS_{vcode}"
+        lst = []
+        for (stag, scode, _v, stype) in grp:
+            scode = int(scode)
+            lst.append((stype, scode))  # src2virt は従来通り (ABS/KEY, code) で保持（HAT用）
+            src2virt.setdefault((stype, scode), []).append(vname)
+        virt2src[vname] = lst
 
-    # ---- helpers ---------------------------------------------------------
-    def _build_one(kind: str, groups: list, vorder: list[str],
-                   virt2src_out: dict, src2virt_out: dict,
-                   map_out: dict):
-        """
-        kind: "ABS" or "KEY"
-        groups: [ [(stype, scode, group_id), ...], ... ]
-        vorder: VIRTUAL_AXES_ORDER or VIRTUAL_BUTTONS_ORDER
-        map_out: dict[((stype, scode))] -> int vcode (== group_id)
-        """
-        for gi, grp in enumerate(groups):
-            if not grp:
-                continue
+    for i, grp in enumerate(button_groups):
+        if not grp:
+            continue
+        vcode = int(grp[0][2])  # = 実コード（BTN_* の値）
+        vname = _ec_name_by_code(vcode, "KEY") or f"BTN_{vcode}"
+        lst = []
+        for (stag, scode, _v, stype) in grp:
+            scode = int(scode)
+            lst.append((stype, scode))  # 同上：HAT 検出用途
+            src2virt.setdefault((stype, scode), []).append(vname)
+        virt2src[vname] = lst
 
-            # group_id 一致チェック
-            gid_set = {int(t[2]) for t in grp}
-            if len(gid_set) != 1:
-                logging.warning(f"{kind}: group[{gi}] has mixed group_id: {gid_set} -> skip")
-                continue
-            group_id = gid_set.pop()
-
-            # 範囲チェック
-            if group_id < 0 or group_id >= len(vorder):
-                logging.warning(f"{kind}: group[{gi}] group_id {group_id} out of range (0..{len(vorder)-1}) -> skip")
-                continue
-
-            vname = vorder[group_id]
-            logging.info(f"{kind}: group[{gi}] -> vname={vname} (group_id={group_id})")
-
-            # 仮想→物理 / 物理→仮想
-            lst = []
-            for (stype, scode, _gid) in grp:
-                scode = int(scode)
-                lst.append((stype, scode))
-                src2virt_out.setdefault((stype, scode), []).append(vname)
-                # emit 用（数値仮想コード）: group_id をそのまま使う
-                map_out[(stype, scode)] = int(group_id)
-            virt2src_out[vname] = lst
-
-    # ---- build axes / buttons -------------------------------------------
+    # 実 emit 用（数値仮想コード）
     map_src2virt_abs, map_src2virt_key = {}, {}
-    _build_one("ABS", axes_groups,   VIRTUAL_AXES_ORDER,   virt2src, src2virt, map_src2virt_abs)
-    _build_one("KEY", button_groups, VIRTUAL_BUTTONS_ORDER, virt2src, src2virt, map_src2virt_key)
+
+    # ※ TSV の vcode（=実コード）をそのまま採用
+    #    (src_tag, code) をキーにして wheel/shift の衝突を防ぐ
+    for grp in axes_groups:
+        for (stag, scode, vcode, stype) in grp:
+            map_src2virt_abs[(stag, int(scode))] = int(vcode)
+    for grp in button_groups:
+        for (stag, scode, vcode, stype) in grp:
+            map_src2virt_key[(stag, int(scode))] = int(vcode)
 
     return virt2src, src2virt, map_src2virt_abs, map_src2virt_key
 
@@ -3582,9 +3605,37 @@ def merge_capabilities(
         # マッピング未指定時は従来通りソートでOK
         key_list = sorted(list(keys))
 
-    ui_caps: Dict[int, List] = {
+    # --- マッピングが指定されている場合は GroupId順（=VIRTUAL_*_ORDER上の出現順）で露出 ---
+    key_list = None
+    if getattr(us, "map_src2virt_key", None):
+        # TSV出現順（dictの挿入順）で一意化
+        used_btn_ids = []
+        for _, vcode in us.map_src2virt_key.items():
+            if isinstance(vcode, int) and vcode not in used_btn_ids:
+                used_btn_ids.append(vcode)
+        # まずTSVで指定されたもの、残りは末尾
+        key_list = [code for code in used_btn_ids if code in keys]
+        rest = [k for k in keys if k not in set(key_list)]
+        key_list += rest
+    else:
+        key_list = sorted(list(keys))
+
+    abs_pairs = None
+    if getattr(us, "map_src2virt_abs", None):
+        used_abs_ids = []
+        for _, vcode in us.map_src2virt_abs.items():
+            if isinstance(vcode, int) and vcode not in used_abs_ids:
+                used_abs_ids.append(vcode)
+        abs_pairs = [(code, abs_list[code]) for code in used_abs_ids if code in abs_list]
+        specified = {c for c, _ in abs_pairs}
+        rest_pairs = [(code, info) for code, info in abs_list.items() if code not in specified]
+        abs_pairs += rest_pairs
+    else:
+        abs_pairs = [(code, absinfo) for code, absinfo in abs_list.items()]
+
+    ui_caps = {
         ecodes.EV_KEY: key_list,
-        ecodes.EV_ABS: [(code, absinfo) for code, absinfo in abs_list.items()],
+        ecodes.EV_ABS: abs_pairs,
     }
     
     if not ff_off:
@@ -4095,57 +4146,70 @@ class UnderSteer:
                         except Exception as e:
                             logging.error(f"[keymap] handle_src_event failed for code={ev.code}, val={ev.value}: {e}")
 
-                if ev.type == ecodes.EV_KEY:
+                    kcode = int(ev.code)
+                    kval  = 1 if ev.value else 0
+                    # ▼ 必ず先に初期化してから解決（NameError対策）
+                    vbtn_code = None
+                    mp = getattr(self, "map_src2virt_key", None)
+                    if isinstance(mp, dict):
+                        # 優先: (src_tag, code) で検索（wheel/shift/pad の衝突回避）
+                        vbtn_code = mp.get((src_tag, kcode))
+                        if not isinstance(vbtn_code, int):
+                            # 互換: ("KEY", code) でも検索（古いTSV/ローダ用）
+                            vbtn_code = mp.get(("KEY", kcode))
+                    # 最後のフォールバック（未定義なら None のまま）
+                    if not isinstance(vbtn_code, int):
+                        vbtn_code = self._map_src_key_to_virtual(src_tag, kcode)
+
                     # 【Shift の場合】
                     if src_tag == "shift" and self.gear_mapper:
                         # ギア関連キーであれば吸収 → 標準化出力に置換
-                        changed = self.gear_mapper.feed_input_key(ev.code, ev.value)
+                        changed = self.gear_mapper.feed_input_key(kcode, ev.value)
                         # “ギア定義に含まれるキー”は素通し抑止
-                        if ev.code in self.gear_mapper.watch_codes:
+                        if kcode in self.gear_mapper.watch_codes:
                             if changed:
                                 self.gear_mapper.emit_to(self.ui)
-                            # ここでは元イベントは流さない
-                        else:
-                            # 【Xbox360 の場合】
-                            # 物理(KEY, code) → 仮想 vcode
-                            vcode = self.map_src2virt_key.get((src_tag, int(ev.code))) if getattr(self, "map_src2virt_key", None) else None
-                            if vcode is not None:
-                                #self._btn_co.update(int(vcode), bool(int(ev.value) != 0))  # ← OR合流（押下カウント方式）
-                                #self.ui.syn()
-                                logging.warning(f"box/src_tag: {src_tag}")
-                                logging.warning(f"box/vcode: {vcode}")
-                                logging.warning(f"box/ev.value: {ev.value}")
-                                vnamecode = VIRTUAL_BUTTONS_ORDER[vcode]
-                                self.ui.emit(E.EV_KEY, _resolveKeyCode(vnamecode), ev.value)
-                                continue
-                            # フォールバック（マップに無ければ従来どおり）
-                            self.ui.emit(E.EV_KEY, ev.code, ev.value)
-
-                    else:
-                        # 物理(KEY, code) → 仮想 vcode
-                        vcode = self.map_src2virt_key.get((src_tag, int(ev.code))) if getattr(self, "map_src2virt_key", None) else None
-                        if vcode is not None:
-                            #self._btn_co.update(int(vcode), bool(int(ev.value) != 0))  # ← OR合流（押下カウント方式）
-                            #self.ui.syn()
-                            logging.warning(f"src_tag: {src_tag}")
-                            logging.warning(f"ev.code: {ev.code} -> {vcode}")
-                            logging.warning(f"ev.value: {ev.value}")
-                            vnamecode = VIRTUAL_BUTTONS_ORDER[vcode]
-                            logging.warning(f"vnamecode: {vnamecode} ({_resolveKeyCode(vnamecode)})")
-                            self.ui.emit(E.EV_KEY, _resolveKeyCode(vnamecode), ev.value)
+                            # 置換優先：元イベントはここで止める
                             continue
-                        # フォールバック（マップに無ければ従来どおり）
-                        self.ui.emit(E.EV_KEY, ev.code, ev.value)
+
+                if ev.type == ecodes.EV_KEY:
+                    kcode = int(ev.code)
+                    kval  = 1 if ev.value else 0
+
+                    # ▼ 必ず先に初期化してから解決
+                    vbtn_code = None
+                    mp = getattr(self, "map_src2virt_key", None)
+                    if isinstance(mp, dict):
+                        # 優先: (src_tag, code) で検索（wheel/shift/pad の衝突回避）
+                        vbtn_code = mp.get((src_tag, kcode))
+                        if not isinstance(vbtn_code, int):
+                            # 互換: ("KEY", code) でも検索（古いTSV/ローダ用）
+                            vbtn_code = mp.get(("KEY", kcode))
+                    # 最後のフォールバック（未定義なら None のまま）
+                    if not isinstance(vbtn_code, int):
+                        vbtn_code = self._map_src_key_to_virtual(src_tag, kcode)
+
+                    # 物理(KEY, code) → 仮想 BTN_* “実コード”へ直接出力
+                    if isinstance(vbtn_code, int):
+                        self.ui.emit(E.EV_KEY, vbtn_code, kval)
+                        continue
+                    # フォールバック：マップ無しは物理コードを素通し
+                    self.ui.emit(E.EV_KEY, kcode, kval)
 
                 elif ev.type == ecodes.EV_ABS:
                     v = ev.value
-                    # Default
-                    v_scaled = v
+                    vabs = None
+                    if getattr(self, "map_src2virt_abs", None):
+                        # GroupId ルーティングは (src_tag, code) で引く（デバイス間衝突を防ぐ）
+                        vabs = self.map_src2virt_abs.get((src_tag, int(ev.code)))
+                    if vabs is None:
+                        vabs = self._map_src_abs_to_virtual(src_tag, ev.code)  # 既定フォールバック
+
                     #if v in (-1, 0, 1):  # HATなどの軸範囲が -1〜1 の場合
                     #    v *= 32767  （削除：スケーラに任せる）
                     routed = False
-                    if self._hat_co and (src_tag, "ABS", int(ev.code)) in self.mapping_src2virt:
-                        for vname in self.mapping_src2virt[(src_tag, "ABS", int(ev.code))]:
+                    if self._hat_co and ("ABS", int(ev.code)) in self.mapping_src2virt:
+                        for vname in self.mapping_src2virt[("ABS", int(ev.code))]:
                             if vname in ("ABS_HAT0X","ABS_HAT0Y"):
                                 vcode = getattr(ecodes, vname, None)
                                 if isinstance(vcode, int):
@@ -4153,15 +4217,7 @@ class UnderSteer:
                                     routed = True
                     if routed:
                         continue
-                    # ① TSVの軸割り当て（map_src2virt_abs）を最優先
-                    vabs = None
-                    if getattr(self, "map_src2virt_abs", None):
-                        # build_routing_from_tsv はキーを ("ABS", code) で格納する
-                        vabs = self.map_src2virt_abs.get(("ABS", int(ev.code)))
-                    # ② 無ければ従来の恒等マップにフォールバック
-                    if vabs is None:
-                        vabs = self._map_src_abs_to_virtual(src_tag, ev.code)
-                        logging.warning(f"v-absフォールバック {src_tag}/{ev.code}: {vabs}")
+
                     # REVERSE 指定があれば反転（axisMappings を参照）
                     try:
                         ent = _findReverseOption(axisMappings, src_tag, ev.code)  # 下で定義
@@ -4306,6 +4362,28 @@ class UnderSteer:
         """
         key = (src_tag, int(src_abs_code))
         return self._abs_map.get(key, None)
+
+    # 追加：KEY 用フォールバック（レガシー互換）
+    # 目的:
+    #   - _pipe_events() 側から呼ばれる旧来のフォールバック呼び出しを解決
+    #   - まず (src_tag, code) を試し、無ければ ("KEY", code) を試す
+    #   - 見つからなければ None（呼び出し側で物理コード素通し）
+    def _map_src_key_to_virtual(self, src_tag: str, kcode: int):
+        try:
+            mp = getattr(self, "map_src2virt_key", None)
+            if not isinstance(mp, dict):
+                return None
+            # 1) 推奨：デバイス別キー（wheel/shift/pad）で検索
+            v = mp.get((src_tag, int(kcode)))
+            if isinstance(v, int):
+                return v
+            # 2) 互換：従来の ("KEY", code) で検索（古いTSV/古いローダ用）
+            v = mp.get(("KEY", int(kcode)))
+            if isinstance(v, int):
+                return v
+            return None
+        except Exception:
+            return None
 
     def _write_ff(self, wheel_dev, t, c, v):
         try:
