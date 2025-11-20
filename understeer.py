@@ -287,36 +287,47 @@ def _parse_mapping_tsv(path: str):
     group_id = 0
     with open(path, "r", encoding="utf-8") as f:
         for raw in f:
-            line = raw.rstrip("\r\n") + "\t\t\t\t\t"           # ← ここ
+            line = raw.rstrip("\r\n") + "\t\t\t\t\t"           # 足りない列を安全に参照するためのパディング
             if not line.strip():
                 if cur:
                     groups.append(cur)
                     cur = []
-                    group_id += 1               # ← グループを進める
+                    group_id += 1               # グループを進める
                 continue
             if line.lstrip().startswith("#"):
                 continue
 
             cols = line.split("\t")
 
-            # 期待列: jsi, device_name, src_tag, src_type, src_code_name, src_code, default_virtual, jsi_in_js, options...
+            # 期待列: jsi, device_name, src_tag, src_type, src_code_name, src_code,
+            #        default_virtual, jsi_in_js, options...
             src_tag  = (cols[2] or "").strip().lower()       # 'wheel' | 'shift' | 'pad'
             src_type = (cols[3] or "").strip().upper()       # 'ABS'   | 'KEY'
+
             # 文字列名 or 数字どちらでも吸収（ABS/KEY を正しく解決）
-            src_code = _resolveKeyCode(cols[5] or cols[4]) if src_type == "KEY" else _toAbsCode(cols[5] or cols[4])
-
-            if src_code is None:
-                continue
-            if len(cols) < 8:                   # ← ここ
-                continue
-
-            # default_virtual（7列目）を“実コード”に解決（必ず ABS/BTN の数値コードにする）
-            dv = (cols[6] or "").strip()
-            # KEY は _resolveKeyCode、ABS は _toAbsCode
             if src_type == "KEY":
                 src_code = _resolveKeyCode(cols[5] or cols[4])
             else:
                 src_code = _toAbsCode(cols[5] or cols[4])
+
+            if src_code is None:
+                continue
+            if len(cols) < 8:
+                continue
+
+            # default_virtual（7列目）を“実コード”に解決（必ず ABS/BTN の数値コードにする）
+            dv = (cols[6] or "").strip()
+
+            # まずは default_virtual をそのまま解決
+            if dv:
+                if src_type == "KEY":
+                    virt_code = _resolveKeyCode(dv)
+                else:
+                    virt_code = _toAbsCode(dv)
+            else:
+                virt_code = None
+
+            # default_virtual が空 or 不正な場合は GroupId によるフォールバック
             if virt_code is None:
                 # 未指定フォールバック（VIRTUAL_*_ORDER のラベル→実コードに解決）
                 if src_type == "KEY":
@@ -326,17 +337,20 @@ def _parse_mapping_tsv(path: str):
                     name = VIRTUAL_AXES_ORDER[group_id] if 0 <= group_id < len(VIRTUAL_AXES_ORDER) else ""
                     virt_code = _toAbsCode(name) if name else None
                 if virt_code is None:
-                    logging.warning("TSV default_virtual 未指定/不正: group_id=%s src=%s %s → 行をスキップ",
-                                    group_id, src_tag, src_code)
+                    logging.warning(
+                        "TSV default_virtual 未指定/不正: group_id=%s src=%s %s → 行をスキップ",
+                        group_id, src_tag, src_code
+                    )
                     continue
 
-
+            # options 列のパース
             try:
                 options   = cols[8] or ""
                 opts_dict = parseOptionsCell(options)
-            except:
+            except Exception:
                 options = ""
-                opts_dict = []
+                opts_dict = {}
+
             # ★ groups 用（ (src_tag, src_code, virt_code, src_type) ）← “実コード”を入れる！
             cur.append((src_tag, int(src_code), int(virt_code), src_type))
 
@@ -344,16 +358,15 @@ def _parse_mapping_tsv(path: str):
             entry = {
                 "group_id": group_id,
                 "device": cols[0],
-
                 "srcTag": src_tag,              # 'wheel' 等
-                "srcAbs": int(src_code),        # ★ 数値コードで保存！
-                "virtAbs": int(virt_code),      # ★ 数値（= ABS/BTN のコード）
-
+                "srcAbs": int(src_code),        # 数値コードで保存
+                "virtAbs": int(virt_code),      # 数値（= ABS/BTN のコード）
                 "note": cols[7],                # js_index_in_js
                 "options": opts_dict,           # {'reverse': True/False}
             }
             axisMappings.append(entry)
             logging.info(entry)
+
     if cur:
         groups.append(cur)
     return groups
