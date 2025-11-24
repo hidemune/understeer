@@ -173,7 +173,7 @@ if [ "$sel" = "14" ]; then
 echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lt:a2,rightx:a3,righty:a4,rt:a5,,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,a:b5,b:b4,x:b3,y:b2,back:b21,start:b22,guide:b12,lb:b0,rb:b1,leftstick:b6,rightstick:b7,platform:Linux" %command%'
   steam steam://rungameid/1190000 >/dev/null 2>&1 &
   # Xbox360 Controller: (HyperX Clutch Tanto)
-  sudo python3 understeer.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
+  sudo python3 understeer360.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
   --mapping-axes mapping_axes.tsv \
   --mapping-buttons mapping_buttons.tsv \
   --mapping-mode priority
@@ -193,7 +193,7 @@ if [ "$sel" = "15" ]; then
 echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lt:a2,rightx:a3,righty:a4,rt:a5,,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,a:b5,b:b4,x:b3,y:b2,back:b21,start:b22,guide:b12,lb:b0,rb:b1,leftstick:b6,rightstick:b7,platform:Linux" %command%'
   steam steam://rungameid/1846380 >/dev/null 2>&1 &
   # Xbox360 Controller: (HyperX Clutch Tanto)
-  sudo python3 understeer.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
+  sudo python3 understeer360.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
   --mapping-axes mapping_axes.tsv \
   --mapping-buttons mapping_buttons.tsv \
   --mapping-mode priority

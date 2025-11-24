@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-understeer.py — unitedWheelShifter 汎用ツール “UnderSteer”
-  - 名前に "wheel" / "shift" を含むデバイスを自動選定（または明示指定）
+understeer360.py — unitedWheelShifter 汎用ツール “UnderSteer”
+  - 名前に "wheel" / "360" を含むデバイスを自動選定（または明示指定）
   - 検出デバイスの一覧表示（ベンダID/プロダクトID、phys/uniq を含む）
   - wheelshifter の ABS/BUTTON を結合した仮想コントローラを生成（/dev/uinput）
   - 物理入力イベントを仮想へ統合ルーティング
@@ -448,7 +448,7 @@ def build_routing_from_tsv(axes_path: str|None, btns_path: str|None):
     map_src2virt_abs, map_src2virt_key = {}, {}
 
     # ※ TSV の vcode（=実コード）をそのまま採用
-    #    (src_tag, code) をキーにして wheel/shift の衝突を防ぐ
+    #    (src_tag, code) をキーにして wheel/360 の衝突を防ぐ
     for grp in axes_groups:
         for (stag, scode, vcode, stype) in grp:
             map_src2virt_abs[(stag, int(scode))] = int(vcode)
@@ -3531,7 +3531,7 @@ def merge_capabilities(
     ignoreArr = ignore_ffb.strip().split(",")
     
     us.register_abs_mapping_first_win("wheel", cap_w)
-    us.register_abs_mapping_first_win("shift", cap_s)
+    us.register_abs_mapping_first_win("360", cap_s)
     
     #print("てすと")
     #print(ignoreArr)
@@ -3612,8 +3612,9 @@ def merge_capabilities(
                 ordered_codes.append(code)
                 seen.add(code)
         # 2) マッピングに含まれない残り（物理のunionなど）を末尾へ
-        remaining = [k for k in sorted(list(keys)) if k not in seen]
-        key_list = ordered_codes + remaining
+        #remaining = [k for k in sorted(list(keys)) if k not in seen]
+        #key_list = ordered_codes + remaining
+        key_list = ordered_codes
     else:
         # マッピング未指定時は従来通りソートでOK
         key_list = sorted(list(keys))
@@ -3626,10 +3627,11 @@ def merge_capabilities(
         for _, vcode in us.map_src2virt_key.items():
             if isinstance(vcode, int) and vcode not in used_btn_ids:
                 used_btn_ids.append(vcode)
-        # まずTSVで指定されたもの、残りは末尾
+        # まずTSVで指定されたもの"だけ"露出する（残りは完全に除外）
+        # rest を追加しない → TSV外のボタンを無視
         key_list = [code for code in used_btn_ids if code in keys]
-        rest = [k for k in keys if k not in set(key_list)]
-        key_list += rest
+        # rest = []  # 不要
+        # key_list += rest
     else:
         key_list = sorted(list(keys))
 
@@ -3913,7 +3915,7 @@ class UnderSteer:
         # （G29偽装が既定：0x046d/0xc24f）
         self.ui = UInputFFDevice(
             ui_caps,
-            name=(args.vname if args else "UnderSteer FFB Wheel-Shifter"),
+            name=(args.vname if args else "UnderSteer FFB Wheel-360"),
             vid=(args.vid if args else 0x046d),
             pid=(args.pid if args else 0xc24f),
             version=0x0100,
@@ -4051,7 +4053,7 @@ class UnderSteer:
     async def _pipe_events(self, src: InputDevice, src_tag: str):
         """
         [LoopStart] async: src.async_read_loop() : wheel
-        [LoopStart] async: src.async_read_loop() : shift
+        [LoopStart] async: src.async_read_loop() : 360
         """
         logging.debug(f"UnderSteer:_pipe_events loop init (%s)", src_tag)
 
@@ -4175,7 +4177,7 @@ class UnderSteer:
                         vbtn_code = self._map_src_key_to_virtual(src_tag, kcode)
 
                     # 【Shift の場合】
-                    if src_tag == "shift" and self.gear_mapper:
+                    if src_tag == "360" and self.gear_mapper:
                         # ギア関連キーであれば吸収 → 標準化出力に置換
                         changed = self.gear_mapper.feed_input_key(kcode, ev.value)
                         # “ギア定義に含まれるキー”は素通し抑止
@@ -4420,7 +4422,7 @@ class UnderSteer:
         no_grab = build_argparser().parse_args().no_grab
         # --- 物理入力の grab（失敗しても続行できるようにする） ---
         if not no_grab:
-            for dev, tag in ((self.wheel_info.dev, "wheel"), (self.shifter_info.dev, "shifter")):
+            for dev, tag in ((self.wheel_info.dev, "wheel"), (self.shifter_info.dev, "360")):
                 try:
                     dev.grab()
                     grabbed = True
@@ -4436,7 +4438,7 @@ class UnderSteer:
             async with asyncio.TaskGroup() as tg:
                 # 入力中継（wheel / shifter）
                 t1 = tg.create_task(self._pipe_events(self.wheel_info.dev, "wheel"))
-                t2 = tg.create_task(self._pipe_events(self.shifter_info.dev, "shift"))
+                t2 = tg.create_task(self._pipe_events(self.shifter_info.dev, "360"))
                 self._tasks.extend([t1, t2])
                 # 明示停止が来るまで待つ（どれかが例外で落ちれば TaskGroup が伝播して抜ける）
                 await self._stop_ev.wait()
@@ -4462,7 +4464,7 @@ class UnderSteer:
 
             # 3) grab 解除
             if grabbed:
-                for dev, tag in ((self.wheel_info.dev, "wheel"), (self.shifter_info.dev, "shifter")):
+                for dev, tag in ((self.wheel_info.dev, "wheel"), (self.shifter_info.dev, "360")):
                     try:
                         dev.ungrab()
                         logging.debug("ungrabbed: %s", tag)
@@ -4608,10 +4610,10 @@ def clear_ff_effects(dev, max_id=64):
 # ------------------------
 
 def build_argparser():
-    p = argparse.ArgumentParser(description="UnderSteer — wheelshifter 統合仮想コントローラ")
+    p = argparse.ArgumentParser(description="UnderSteer — wheel-360 統合仮想コントローラ")
     p.add_argument("--list", action="store_true", help="検出した入力デバイスを一覧表示して終了")
     p.add_argument("--scan-names", nargs=2, metavar=("WHEEL_KW", "SHIFTER_KW"),
-                   default=("wheel", "shift"), help="自動選定に使う名前のキーワード（既定: wheel / shifter）")
+                   default=("wheel", "360"), help="自動選定に使う名前のキーワード（既定: wheel / 360）")
     p.add_argument("--wheel", help="wheel デバイスの event パスを明示指定（例: /dev/input/event21）")
     p.add_argument("--shifter", help="shifter デバイスの event パスを明示指定")
     p.add_argument("--ff-pass-through-easy", action="store_true",
@@ -4632,8 +4634,8 @@ def build_argparser():
     p.add_argument("--mapping-mode", choices=["priority","last"], default="priority",
                    help="HAT合流の挙動: priority=グループ内の上から順 / last=最後に動いたソース")
     p.add_argument("--keymap", help="ボタン→キーストロークのTSVファイル")
-    p.add_argument("--keymap-source", choices=["wheel","shift","both"], default="both",
-                    help="キーボード送出の対象元（wheel/shift/both）")
+    p.add_argument("--keymap-source", choices=["wheel","360","both"], default="both",
+                    help="キーボード送出の対象元（wheel/360/both）")
     p.add_argument("--echo-buttons", action="store_true",
                    help="押したボタン名をログ出力（TSV作成の補助）")
     p.add_argument("--echo-buttons-tsv", action="store_true",
@@ -4644,7 +4646,7 @@ def build_argparser():
                    default=0x046d, help="仮想デバイスの Vendor ID (例: 0x046d = Logitech)")
     p.add_argument("--pid", type=lambda s: int(s, 0),
                    default=0xc24f, help="仮想デバイスの Product ID (例: 0xc24f = G29 Driving Force Racing Wheel PS3)")
-    p.add_argument("--vname", type=str, default="UnderSteer FFB Wheel-Shifter",
+    p.add_argument("--vname", type=str, default="UnderSteer FFB Wheel-360",
                    help="仮想デバイス名 (任意の文字列)")
 
     p.add_argument("--ff-off", action='store_true',
@@ -4794,21 +4796,21 @@ async def main():
     if args.shifter:
         shifter_info = find_by_path(infos, args.shifter)
         if not shifter_info:
-            print(f"[!] shifter 指定が見つかりません: {args.shifter}", file=sys.stderr)
+            print(f"[!] 360 指定が見つかりません: {args.shifter}", file=sys.stderr)
             return 2
     else:
         shifter_info = pick_device(infos, args.scan_names[1])
 
     if not wheel_info or not shifter_info:
-        print("[!] wheel / shifter の自動選定に失敗しました。--list で名前を確認し、--wheel/--shifter で明示指定してください。", file=sys.stderr)
+        print("[!] wheel / 360 の自動選定に失敗しました。--list で名前を確認し、--wheel/--shifter で明示指定してください。", file=sys.stderr)
         return 3
 
     logging.debug(f"wheel  : {fmt_info(wheel_info)}")
-    logging.debug(f"shifter: {fmt_info(shifter_info)}")
+    logging.debug(f"360    : {fmt_info(shifter_info)}")
     
     # ボタン名一覧をログ出力
     list_button_names(wheel_info, "wheel")
-    list_button_names(shifter_info, "shifter")
+    list_button_names(shifter_info, "360")
     
     # ラン
     gear_mapper = None
@@ -4888,7 +4890,7 @@ async def main():
                     code = -1
                 rows_btns.append([js_index if js_index is not None else -1, name, tag, "KEY", code_name, code, code_name])
         _push(wheel_info, "wheel")
-        _push(shifter_info, "shift")
+        _push(shifter_info, "360")
         with open(axes_path, "w", encoding="utf-8", newline="") as f:
             _write_map_header(f, "axes")
             w = __import__("csv").writer(f, delimiter="\t")

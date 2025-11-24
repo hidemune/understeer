@@ -11,7 +11,7 @@
 #? (auto-assigned to ABS_Y; edit if needed)
 
 # ABS_Z (brake)
-3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_1	1	ABS_1	1	REVERSE
+3	Thrustmaster Thrustmaster Racing Wheel FFB	wheel	ABS	ABS_1	1	ABS_2	2	REVERSE
 1	HyperX Clutch Tanto	shift	ABS	ABS_2	2	ABS_2	2
 #? (auto-assigned to ABS_Z; edit if needed)
 
