@@ -121,15 +121,30 @@ class ButtonMerger:
         }
 
 def _resolveAbsCode(code_or_name):
-    """ 'ABS_2' / 'ABS_THROTTLE' / 2 → int （失敗 None）"""
+    """ 'ABS_2' / 'ABS_THROTTLE' / 'ABS_HAT0X' / 2 → int （失敗 None）"""
     if isinstance(code_or_name, int):
         return code_or_name
+
     s = str(code_or_name).strip().upper()
+    if not s:
+        return None
+
+    # 素の数値 ("6" など)
     if s.isdigit():
         return int(s)
+
+    # "ABS_16" / "ABS_2" など（数字付き）
     if s.startswith("ABS_") and s[4:].isdigit():
-        return int(s.split("_",1)[1])
-    return EC_ABS.get(s, None)
+        return int(s.split("_", 1)[1])
+
+    # "ABS_THROTTLE" / "ABS_HAT0X" / "THROTTLE" / "HAT0X" など
+    if s.startswith("ABS_"):
+        key = s[4:]
+    else:
+        key = s
+
+    return EC_ABS.get(key, None)
+
 
 from evdev.ecodes import ecodes as EC  # 名前→コードの総合辞書
 
@@ -271,15 +286,55 @@ def parseOptionsCell(cell: str) -> dict:
         #         pass
     return opts
 
-from evdev.ecodes import ABS as EC_ABS
+from evdev.ecodes import ecodes as EC
 
 def _toAbsCode(name_or_num: str):
-    s = (str(name_or_num).strip()).upper()
+    """
+    '0' / '6' / 'ABS_6' / 'ABS_X' / 'X'
+    'ABS_THROTTLE' / 'THROTTLE'
+    'ABS_HAT0X' / 'HAT0X' などを ABS コード(int) に変換する。失敗時は None。
+    """
+    # すでに int の場合
+    if isinstance(name_or_num, int):
+        return int(name_or_num)
+
+    s = str(name_or_num).strip().upper()
+    if not s:
+        return None
+
+    # 素の数字 "6" など
     if s.isdigit():
         return int(s)
+
+    # "ABS_6" → 6 のようなパターン
     if s.startswith("ABS_") and s[4:].isdigit():
         return int(s[4:])
-    return EC_ABS.get(s, None)
+
+    # ハイフンをアンダースコアに揃える（念のため）
+    s = s.replace("-", "_")
+
+    # 候補となるシンボル名を列挙
+    candidates = []
+    if s.startswith("ABS_"):
+        # そのまま ('ABS_HAT0X') と、プレフィクスを剥いだ ('HAT0X') の両方
+        candidates.append(s)
+        candidates.append(s[4:])
+    else:
+        # 'HAT0X' / 'X' のような場合は 'ABS_HAT0X' / 'ABS_X' も試す
+        candidates.append("ABS_" + s)
+        candidates.append(s)
+
+    # evdev の総合辞書 EC から name→code を引く
+    for key in candidates:
+        code = EC.get(key)
+        if isinstance(code, int):
+            #print("New Version _toAbsCode", key, "->", code)  # デバッグ用（不要なら消してOK）
+            return code
+
+    print("New Version _toAbsCode", s, "-> None")  # デバッグ用
+    return None
+
+
 
 # --- TSV loader (blank-line groups) ---
 def _parse_mapping_tsv(path: str):
@@ -296,8 +351,22 @@ def _parse_mapping_tsv(path: str):
                 continue
             if line.lstrip().startswith("#"):
                 continue
-
             cols = line.split("\t")
+
+            print(
+                "js=%s dev=%s tag=%s type=%s name=%s code=%s dv=%s jsidx=%s opt=%s"
+                % (
+                    cols[0],  # js_index
+                    cols[1],  # device_name
+                    cols[2],  # src_tag
+                    cols[3],  # src_type
+                    cols[4],  # src_code_name
+                    cols[5],  # src_code
+                    cols[6],  # default_virtual
+                    cols[7],  # js_index_in_js
+                    cols[8],  # options
+                )
+            )
 
             # 期待列: jsi, device_name, src_tag, src_type, src_code_name, src_code,
             #        default_virtual, jsi_in_js, options...
@@ -318,6 +387,15 @@ def _parse_mapping_tsv(path: str):
             # default_virtual（7列目）を“実コード”に解決（必ず ABS/BTN の数値コードにする）
             dv = (cols[6] or "").strip()
 
+            # 特別キーワード: IGNORE/SKIP/NONE → この行を完全に無視
+            # （仮想デバイスに軸そのものを expose しない）
+            if dv.upper() in ("IGNORE", "SKIP", "NONE"):
+                logging.info(
+                    "TSV: IGNORE 行をスキップ src_tag=%s src_type=%s src_code=%s",
+                    src_tag, src_type, src_code,
+                )
+                continue
+
             # まずは default_virtual をそのまま解決
             if dv:
                 if src_type == "KEY":
@@ -326,7 +404,7 @@ def _parse_mapping_tsv(path: str):
                     virt_code = _toAbsCode(dv)
             else:
                 virt_code = None
-
+            
             # default_virtual が空 or 不正な場合は GroupId によるフォールバック
             if virt_code is None:
                 # 未指定フォールバック（VIRTUAL_*_ORDER のラベル→実コードに解決）
@@ -342,7 +420,9 @@ def _parse_mapping_tsv(path: str):
                         group_id, src_tag, src_code
                     )
                     continue
-
+            
+            print(f"virt_code: {virt_code}")
+            
             # options 列のパース
             try:
                 options   = cols[8] or ""
@@ -376,7 +456,7 @@ def _parse_mapping_tsv(path: str):
 try:
     VIRTUAL_AXES_ORDER
 except NameError:
-    VIRTUAL_AXES_ORDER = ["ABS_X", "ABS_Y", "ABS_Z", "ABS_RX", "ABS_RY", "ABS_RZ", "ABS_HAT0X", "ABS_HAT0Y", "ABS_THROTTLE", "ABS_RUDDER"]
+    VIRTUAL_AXES_ORDER = ["ABS_X", "ABS_Y", "ABS_Z", "ABS_RX", "ABS_RY", "ABS_RZ", "ABS_HAT0X", "ABS_HAT0Y"]
 try:
     VIRTUAL_BUTTONS_ORDER
 except NameError:
@@ -3641,13 +3721,17 @@ def merge_capabilities(
         for _, vcode in us.map_src2virt_abs.items():
             if isinstance(vcode, int) and vcode not in used_abs_ids:
                 used_abs_ids.append(vcode)
+
+        # ★ TSV で指定された virt ABS だけを仮想デバイスに expose する
         abs_pairs = [(code, abs_list[code]) for code in used_abs_ids if code in abs_list]
-        specified = {c for c, _ in abs_pairs}
-        rest_pairs = [(code, info) for code, info in abs_list.items() if code not in specified]
-        abs_pairs += rest_pairs
+
     else:
+        # マッピング未指定時だけ、物理の全 ABS をそのまま使う
         abs_pairs = [(code, absinfo) for code, absinfo in abs_list.items()]
 
+    print("abs_pairs:")
+    print(abs_pairs)
+    
     ui_caps = {
         ecodes.EV_KEY: key_list,
         ecodes.EV_ABS: abs_pairs,
@@ -4060,7 +4144,14 @@ class UnderSteer:
         import evdev
         telem = RateLimitedLogger(min_interval_ms=5000, min_delta=100)
         latest = defaultdict(int)
-        
+
+        # HAT buttons to virtual ABS (for devices like Tanto)
+        DPAD_TO_HAT = {
+            ecodes.BTN_DPAD_LEFT:  (-1, 0),
+            ecodes.BTN_DPAD_RIGHT: (1, 0),
+            ecodes.BTN_DPAD_UP:    (0, -1),
+            ecodes.BTN_DPAD_DOWN:  (0, 1),
+        }
         # 可能なら初期値を一度読む
         try:
             absinfo = src.absinfo
@@ -4112,6 +4203,15 @@ class UnderSteer:
                     if self.echo_buttons_tsv:
                         # そのまま keymap の素材にできるようタブ区切りテンプレ行も出す
                         print(f"{name}\tKEY_???", flush=True)
+
+                if ev.type == ecodes.EV_KEY and ev.code in DPAD_TO_HAT:
+                    dx, dy = DPAD_TO_HAT[ev.code]
+                    if dx != 0:
+                        self.ui.write(ecodes.EV_ABS, ecodes.ABS_HAT0X, dx if ev.value else 0)
+                    if dy != 0:
+                        self.ui.write(ecodes.EV_ABS, ecodes.ABS_HAT0Y, dy if ev.value else 0)
+                    self.ui.syn()
+                    continue
 
                 # HAT 方向名（-1/0/1 の遷移を押下/解放）
                 if ev.type == ecodes.EV_ABS:
@@ -4643,10 +4743,10 @@ def build_argparser():
 
     # ▼▼ 追加：仮想デバイスの偽装ID/名称を指定できるように ▼▼
     p.add_argument("--vid", type=lambda s: int(s, 0),
-                   default=0x046d, help="仮想デバイスの Vendor ID (例: 0x046d = Logitech)")
+                   default=0xadde, help="仮想デバイスの Vendor ID (例: 0x046d = Logitech)")
     p.add_argument("--pid", type=lambda s: int(s, 0),
-                   default=0xc24f, help="仮想デバイスの Product ID (例: 0xc24f = G29 Driving Force Racing Wheel PS3)")
-    p.add_argument("--vname", type=str, default="UnderSteer FFB Wheel-360",
+                   default=0xefbe, help="仮想デバイスの Product ID (例: 0xc24f = G29 Driving Force Racing Wheel PS3)")
+    p.add_argument("--vname", type=str, default="Xbox 360 Controller understeer",
                    help="仮想デバイス名 (任意の文字列)")
 
     p.add_argument("--ff-off", action='store_true',
