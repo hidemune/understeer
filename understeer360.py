@@ -2409,10 +2409,44 @@ class UInputFFDevice:
         # --- ABS: ビット + レンジ設定（AbsInfo を使う）---
         for code, ai in ui_caps.get(E.EV_ABS, []):
             self._setbit(UI_SET_ABSBIT, int(code))
+
+            # デフォルトは元の値
+            vmin = int(ai.min)
+            vmax = int(ai.max)
+
+            # ★ ABS_Z / ABS_RZ のレンジを強制的に 0–255 にする ★
+            # ゲームパッドのトリガーとして扱われる軸を 0–1023 → 0–255 に正規化
+            if code in (E.ABS_Z, E.ABS_RZ):
+                vmin = 0
+                vmax = 32767
+
+                # スケール用メタ情報も 0–32767 に合わせる
+                center = (vmin + vmax) // 2
+                full_range = max(1, vmax - vmin)
+                dz_raw = 1  # Dead Zone
+
+                # self._abs_meta が存在しない場合もあるため ensure
+                if not hasattr(self, "_abs_meta"):
+                    self._abs_meta = {}
+
+                self._abs_meta[int(code)] = {
+                    "min": vmin,
+                    "max": vmax,
+                    "center": center,
+                    "dz_raw": dz_raw,
+                }
+
+                # ここで ai を書き換え（AbsInfo は immutable のため要再構築）
+                ai = AbsInfo(
+                    value=0,
+                    min=vmin, max=vmax,
+                    fuzz=int(ai.fuzz), flat=int(ai.flat), resolution=int(ai.resolution)
+                )
+
             # AbsInfo(value,min,max,fuzz,flat,resolution)
             self._abs_setup(
                 int(code),
-                int(ai.min), int(ai.max),
+                vmin, vmax,
                 int(ai.fuzz), int(ai.flat), int(ai.resolution),
                 int(ai.value),
             )
@@ -3616,28 +3650,32 @@ def merge_capabilities(
     #print("てすと")
     #print(ignoreArr)
     w_abs_list = []
-    
+
+    #from evdev import ecodes  # もう import 済みなら不要
     def take_abs(source):
         abs_caps = source.get(ecodes.EV_ABS, [])
         for code, absinfo in abs_caps:
             w_abs_list.append(ecodes.ABS[code])
-            # すでにある場合は先勝ちで何もしない
             if code in abs_list:
                 pass
             else:
-                # 新規登録時も flat=0 / fuzz=0 に正規化
                 fuzz = 0 if zero_fuzz else absinfo.fuzz
                 flat = 0 if force_flat0 else absinfo.flat
                 dst_min, dst_max = absinfo.min, absinfo.max
                 mul = 1
-                # 物理が -1..1（または 0..1）の「正規化済み」軸なら仮想側で 16bit レンジへ拡大
+
+                # ★ ここを追加：トリガー軸は仮想レンジ 0–32767 に固定
+                if code in (ecodes.ABS_Z, ecodes.ABS_RZ):
+                    dst_min, dst_max = 0, 32767
+
+                # 「0–1 正規化軸」の拡大処理はそのまま
                 if absinfo.min == 0 and absinfo.max == 1:
                     dst_min, dst_max, mul = 0, 32767, 32767
+
                 abs_list[code] = AbsInfo(
                     value=0, min=dst_min, max=dst_max,
                     fuzz=fuzz, flat=flat, resolution=absinfo.resolution
                 )
-                # 後段のイベント拡大用メモ
                 if us is not None and mul != 1:
                     us._axis_scale[code] = (absinfo.min, absinfo.max, mul)
 
@@ -4388,48 +4426,32 @@ class UnderSteer:
             vabs = int(code)
             self._abs_map[(role, int(code))] = vabs
 
+            # 物理側レンジ（そのまま保持）
             smin = int(getattr(ai, "min", -32768))
             smax = int(getattr(ai, "max",  32767))
             self._abs_src_meta[(role, vabs)] = {"min": smin, "max": smax}
-            # 初期センターは mid（実測で後から馴染ませる）
             self._abs_src_center[(role, vabs)] = (smin + smax) // 2
 
             if vabs not in self._abs_owner:
                 self._abs_owner[vabs] = role
 
-            # 仮想側（先勝ちを基準に固定）
+            # 仮想側レンジ
             if vabs not in self._abs_meta:
                 vmin, vmax = smin, smax
+
+                # ★ ここを追加：ABS_Z / ABS_RZ は 0–32767 のターゲットにする
+                if vabs in (ecodes.ABS_Z, ecodes.ABS_RZ):
+                    vmin, vmax = 0, 32767
+
                 vcenter = (vmin + vmax) // 2
                 full = max(1, vmax - vmin)
                 dz_raw = max(1, int(full * deadzone_pct))
-                self._abs_meta[vabs] = {"min": vmin, "max": vmax, "center": vcenter, "dz_raw": dz_raw}
-            #print(f"vabs : {vabs}")
-            #print(self._abs_meta[vabs])
-        """
-        abs_caps = caps.get(ecodes.EV_ABS, [])
-        for code, absinfo in abs_caps:
-             vabs = int(code)  # identity
-             self._abs_map[(role, int(code))] = vabs
-
-             # 物理側レンジも記録
-             try:
-                 smin = int(absinfo.min)
-                 smax = int(absinfo.max)
-             except Exception:
-                 smin, smax = -32768, 32767
-             self._abs_src_meta[(role, int(code))] = {"min": smin, "max": smax}
-
-             # 仮想（ターゲット）メタは先勝ち優先で決める
-             if vabs not in self._abs_owner:
-                 self._abs_owner[vabs] = role
-             amin, amax = smin, smax
-             center = (amin + amax) // 2
-             full = max(1, amax - amin)
-             dz_raw = max(1, int(full * deadzone_pct))
-             if vabs not in self._abs_meta:
-                 self._abs_meta[vabs] = {"min": amin, "max": amax, "center": center, "dz_raw": dz_raw}
-        """
+                self._abs_meta[vabs] = {
+                    "min": vmin,
+                    "max": vmax,
+                    "center": vcenter,
+                    "dz_raw": dz_raw,
+                }
 
     # 低速で実測センターを追従（静止時のみ）
     def _track_center(self, role, code, raw):
