@@ -78,7 +78,6 @@ echo "2) Forza Horizon 5                        (FFB OK)"
 echo "3) Test Drive Unlimited Solar Crown       (FFB OK)"
 echo "4) rFactor2                               (FFB OK)"
 echo "5) Asseto Corsa                           (FFB OK)"
-echo ""
 echo "11) Euro Truck                            (FFB OK)"
 echo "12) Dirt Rally                            (FFB OK)"
 echo "13) City Car Driving                      (FFB OK)"
@@ -87,9 +86,10 @@ echo "(With Xbox360 Contoroller)"
 echo ""
 echo "14) Car Mechanic Simulator 2021           (360 OK)"
 echo "15) Need For Speed Unbound                (360 OK)"
+echo "16) Ballisticng                           (360 ??)"
 echo "21) Ride 5                                (360 NG)"
-echo "22) Ride 4                                (360 OK)"
-echo "23) MXDP 3                                (360   )"
+echo "22) Ride 4                                (360 Good)"
+echo "23) MXDP 3                                (360 ??)"
 echo ""
 echo "Please Select.. (case sensitive)"
 read sel
@@ -163,7 +163,7 @@ if [ "$sel" = "13" ]; then
   sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode  
 fi
 
-#SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,lb:b4,rb:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%
+#SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%
 
 if [ "$sel" = "14" ]; then
   echo "# 1190000 # Car Mechanic Simulator 2021 (With Xbox360 Contoroller)"
@@ -197,6 +197,26 @@ if [ "$sel" = "15" ]; then
 #※ GUID は 必ず実際の値に置き換えてください（これが違うと丸ごと無視されます）。
 echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%'
   steam steam://rungameid/1846380 >/dev/null 2>&1 &
+  # Xbox360 Controller: (HyperX Clutch Tanto)
+  sudo python3 understeer360.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
+  --mapping-axes mapping_axes.tsv \
+  --mapping-buttons mapping_buttons.tsv \
+  --mapping-mode priority
+fi
+
+if [ "$sel" = "16" ]; then
+  echo "# 473770 # Ballisticng (With Xbox360 Contoroller)"
+  echo "Please use Proton."
+  flg="T"; minimize_self
+#GUID の取り方
+#$ ./sdl-guid 
+#Joysticks: 3
+#0 path: /dev/input/js0 (event: /dev/input/event5) name: "Thrustmaster Racing Wheel FFB" guid: 03004ad34f04000096b6000011010000 vendor: 0x044f product: 0xb696 version: 0x0111
+#1 path: /dev/input/js3 (event: /dev/input/event12) name: "HyperX Clutch Tanto" guid: 0300259ff0030000b409000001610000 vendor: 0x03f0 product: 0x09b4 version: 0x6101
+#2 path: /dev/input/js4 (event: /dev/input/event29) name: "Xbox 360 Controller understeer" guid: 0300ca40dead0000beef000000010000 vendor: 0xadde product: 0xefbe version: 0x0100
+#※ GUID は 必ず実際の値に置き換えてください（これが違うと丸ごと無視されます）。
+echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%'
+  steam steam://rungameid/473770 >/dev/null 2>&1 &
   # Xbox360 Controller: (HyperX Clutch Tanto)
   sudo python3 understeer360.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
   --mapping-axes mapping_axes.tsv \
@@ -248,6 +268,7 @@ fi
 
 if [ "$sel" = "23" ]; then
   echo "# 561600 # MXDP 3 (With Xbox360 Contoroller)"
+  echo "Please use Proton."
   flg="T"; minimize_self
 #GUID の取り方
 #$ ./sdl-guid 
