@@ -66,7 +66,7 @@ SDL_GAMECONTROLLER_IGNORE_DEVICES=0 SDL_HIDAPI_JOYSTICK=0 SDL_GAMECONTROLLER_IGN
 [for Xbox 360 Controller]
 Example)
 
-SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lt:a2,rightx:a3,righty:a4,rt:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,lb:b4,rb:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%
+SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%
 
 ...
 EOS
