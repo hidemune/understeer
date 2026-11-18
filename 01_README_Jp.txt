@@ -191,3 +191,33 @@ OK★　: FF_RUMBLE
 
 これで HIDAPI を無効化し、`/dev/input/eventX` 経由の EV_FF を使わせます。
  （多くのゲームではこれで有効になります）
+
+
+
+
+lsusb 結果：
+044f:b696 ThrustMaster, Inc. Thrustmaster Racing Wheel FFB
+10f5:7096 Turtle Beach VelocityOne Multi-Shift
+
+
+
+### ChatGPTで、近い製品教えてもらった。
+
+T248に近いThrustmaster製品で、FFB対応を維持しながら物理T248と別の製品IDにするなら、まず次の候補です。
+おすすめの製品ID
+製品	VID	PID	FFB
+T300 RS（PS4モード）	044F	B66D	対応
+T300 RS GT	044F	B66F	対応
+T150	044F	B677	対応
+TX Racing Wheel	044F	B669	対応
+TS-PC Racer	044F	B689	対応
+TS-XW	044F	B692	対応
+
+
+
+T150	044F	B677
+
+
+PROTON_VKD3D_HEAP=1 VKD3D_CONFIG=enable_experimental_features,descriptor_heap gamemoderun SDL_GAMECONTROLLER_IGNORE_DEVICES=0 SDL_HIDAPI_JOYSTICK=0 SDL_GAMECONTROLLER_IGNORE_DEVICES=0x044f/0xb696 SDL_HIDAPI_IGNORE_DEVICES=0x044f/0xb696 %command%
+
+

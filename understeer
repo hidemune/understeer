@@ -2,6 +2,10 @@
 
 clear
 echo "Please wait..."
+steam -silent &
+sleep 1
+wmctrl -r Steam -b toggle,hidden
+
 # 個人環境初期化用
 bash /home/user/bin/init.sh
 
@@ -55,6 +59,8 @@ else
     exit 1
 fi
 
+#oversteer --device "Thrustmaster Thrustmaster Racing Wheel FFB" -p "TM-T128" &
+oversteer &
 
 echo ""
 echo "You can select \"Force feedback mode:\""
@@ -73,23 +79,29 @@ clear
 
 echo "(With H-Shifter, Force Feedback)"
 echo ""
-echo "1) Project Cars 2                         (FFB OK)"
+echo "1) Forza Horizon 6                        (FFB OK)"
 echo "2) Forza Horizon 5                        (FFB OK)"
 echo "3) Test Drive Unlimited Solar Crown       (FFB OK)"
 echo "4) rFactor2                               (FFB OK)"
 echo "5) Asseto Corsa                           (FFB OK)"
+echo "6) Auto Mobilista 2 Demo                  (FFB OK)"
+echo "7) Project Cars 2                         (FFB OK)"
+
 echo "11) Euro Truck                            (FFB OK)"
 echo "12) Dirt Rally                            (FFB OK)"
-#echo "13) City Car Driving                      (NG)"
+echo "13) City Car Driving                      (NG)"
+echo "21) Speed Dreams                          (OK)"
+#echo "22) Speed Dreams (no Gearmap)             (??)"
 echo ""
 echo "(With Xbox360 Contoroller)"
 echo ""
-echo "14) Car Mechanic Simulator 2021           (360 OK)"
-echo "15) Need For Speed Unbound                (360 OK)"
-echo "16) Ballisticng                           (360 ??)"
-#echo "21) Ride 5                                (360 NG)"
-echo "22) Ride 4                                (360 OK)"
-echo "23) MXDP 3                                (360 OK)"
+echo "31) Car Mechanic Simulator 2021           (360 OK)"
+echo "32) Need For Speed Unbound                (360 OK)"
+echo "33) Ballisticng                           (360 ??)"
+echo "34) Slow Roads                            (OK)"
+
+echo "41) Ride 4                                (360 OK)"
+echo "42) MXDP 3                                (360 OK)"
 echo ""
 echo "Please Select.. (case sensitive)"
 read sel
@@ -97,10 +109,11 @@ read sel
 flg="Def"
 
 if [ "$sel" = "1" ]; then
-  echo "# 378860 # Project Cars 2"
+  echo "# 2483190 # Forza Horizon 6"
   flg="T"; minimize_self
-  steam steam://rungameid/378860 >/dev/null 2>&1 &
-  sudo python3 understeer.py --ff-pass-through$mode --no-grab 
+  steam steam://rungameid/2483190 > /dev/null 2>&1 &
+  #sudo python3 understeer.py --ff-pass-through$mode --no-grab --verbose > log.txt 2>&1 || sync
+  sudo python3 understeer.py --ff-pass-through$mode --no-grab --verbose 
 fi
 
 if [ "$sel" = "2" ]; then
@@ -136,6 +149,19 @@ if [ "$sel" = "5" ]; then
   sudo python3 understeer.py --ff-pass-through$mode  
 fi
 
+if [ "$sel" = "6" ]; then
+  echo "# 1786210 # Auto Mobilista 2 Demo"
+  flg="T"; minimize_self
+  steam steam://rungameid/1786210 >/dev/null 2>&1 &
+  sudo python3 understeer.py --ff-pass-through$mode  
+fi
+
+if [ "$sel" = "7" ]; then
+  echo "# 378860 # Project Cars 2"
+  flg="T"; minimize_self
+  steam steam://rungameid/378860 >/dev/null 2>&1 &
+  sudo python3 understeer.py --ff-pass-through$mode --no-grab 
+fi
 
 
 # ----------------------
@@ -163,9 +189,23 @@ if [ "$sel" = "13" ]; then
   sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode  
 fi
 
+if [ "$sel" = "21" ]; then
+  echo "# Speed Dreams"
+  flg="T"; minimize_self
+  /home/user/git/SpeedDreams/speed-dreams-v2.4.2-x86_64.AppImage 2>&1 &
+  # --gear-map gears.dat        ニュートラル入力が別途必要な場合に指定
+  sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode  
+  #sudo python3 understeer.py --ff-pass-through$mode  
+fi
+
+
+
+
+# xbox 360 ---------------------------
+
 #SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%
 
-if [ "$sel" = "14" ]; then
+if [ "$sel" = "31" ]; then
   echo "# 1190000 # Car Mechanic Simulator 2021 (With Xbox360 Contoroller)"
   flg="T"; minimize_self
 #GUID の取り方
@@ -175,7 +215,7 @@ if [ "$sel" = "14" ]; then
 #1 path: /dev/input/js3 (event: /dev/input/event12) name: "HyperX Clutch Tanto" guid: 0300259ff0030000b409000001610000 vendor: 0x03f0 product: 0x09b4 version: 0x6101
 #2 path: /dev/input/js4 (event: /dev/input/event29) name: "Xbox 360 Controller understeer" guid: 0300ca40dead0000beef000000010000 vendor: 0xadde product: 0xefbe version: 0x0100
 #※ GUID は 必ず実際の値に置き換えてください（これが違うと丸ごと無視されます）。
-echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%'
+echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="030039c76d0400004fc2000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%'
   steam steam://rungameid/1190000 >/dev/null 2>&1 &
   # Xbox360 Controller: (HyperX Clutch Tanto)
   sudo python3 understeer360.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
@@ -185,7 +225,7 @@ echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAM
 fi
 
 
-if [ "$sel" = "15" ]; then
+if [ "$sel" = "32" ]; then
   echo "# 1846380 # Need For Speed Unbound (With Xbox360 Contoroller)"
   flg="T"; minimize_self
 #GUID の取り方
@@ -204,7 +244,7 @@ echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAM
   --mapping-mode priority
 fi
 
-if [ "$sel" = "16" ]; then
+if [ "$sel" = "33" ]; then
   echo "# 473770 # Ballisticng (With Xbox360 Contoroller)"
   echo "Please use Proton."
   flg="T"; minimize_self
@@ -226,8 +266,10 @@ fi
 
 
 
-if [ "$sel" = "21" ]; then
-  echo "# 1650010 # Ride 5 (With Xbox360 Contoroller)"
+if [ "$sel" = "34" ]; then
+  echo "# Slow Roads"
+  echo "# 3431300 # Ballisticng (With Xbox360 Contoroller)"
+  echo "Please use Proton."
   flg="T"; minimize_self
 #GUID の取り方
 #$ ./sdl-guid 
@@ -237,7 +279,7 @@ if [ "$sel" = "21" ]; then
 #2 path: /dev/input/js4 (event: /dev/input/event29) name: "Xbox 360 Controller understeer" guid: 0300ca40dead0000beef000000010000 vendor: 0xadde product: 0xefbe version: 0x0100
 #※ GUID は 必ず実際の値に置き換えてください（これが違うと丸ごと無視されます）。
 echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAMECONTROLLERCONFIG="0300ca40dead0000beef000000010000,Xbox 360 Controller understeer,leftx:a0,lefty:a1,lefttrigger:a2,rightx:a3,righty:a4,righttrigger:a5,dpup:a7-,dpdown:a7+,dpleft:a6-,dpright:a6+,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,guide:b8,leftstick:b9,rightstick:b10,platform:Linux" %command%'
-  steam steam://rungameid/1650010 >/dev/null 2>&1 &
+  steam steam://rungameid/3431300 >/dev/null 2>&1 &
   # Xbox360 Controller: (HyperX Clutch Tanto)
   sudo python3 understeer360.py --vid 0xadde --pid 0xefbe --vname "Xbox 360 Controller understeer" --scan-names wheel Tanto  \
   --mapping-axes mapping_axes.tsv \
@@ -246,7 +288,7 @@ echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAM
 fi
 
 
-if [ "$sel" = "22" ]; then
+if [ "$sel" = "41" ]; then
   echo "# 1259980 # Ride 4 (With Xbox360 Contoroller)"
   flg="T"; minimize_self
 #GUID の取り方
@@ -266,7 +308,7 @@ echo 'SDL_GAMECONTROLLER_IGNORE_DEVICES=03004ad34f04000096b6000011010000 SDL_GAM
 fi
 
 
-if [ "$sel" = "23" ]; then
+if [ "$sel" = "42" ]; then
   echo "# 561600 # MXDP 3 (With Xbox360 Contoroller)"
   echo "Please use Proton."
   flg="T"; minimize_self
@@ -302,7 +344,7 @@ if [ "$flg" = "Def" ]; then
     echo ""
     echo "o) --ff-off Test"
     echo ""
-    echo "Enter) Only Understeer with FFB (no Grab with DBG-MSG)"
+    echo "Enter) Only Understeer with FFB (with Grab / no-MSG)"
     echo ""
     echo "Please Select.. (case sensitive)"
     read sel
@@ -355,7 +397,7 @@ fi
 # ここだけフラグチェック
 if [ "$flg" = "Def" ]; then
 
-  echo "# Only Understeer with FFB (Grab no MSG)"
+  echo "# Only Understeer with FFB (with Grab / no-MSG)"
   flg="T"; minimize_self
   sudo python3 understeer.py --ff-pass-through 
 

@@ -84,17 +84,17 @@ def set_initial_ff_gain(_fd, percent):
     """FFB初期ゲイン設定。percentは0～100"""
     # AutoCenter 設定
     ac_value = int((percent / 100.0) * 0xFFFF)
-    ac_event = struct.pack("llHHI", int(time.time()), 0, ecodes.EV_FF,
+    ac_event = struct.pack(INPUT_EVENT_FMT, int(time.time()), 0, ecodes.EV_FF,
                            ecodes.FF_AUTOCENTER, ac_value)
     os.write(_fd, ac_event)  # ← 修正ポイント
-    print(f"Initial AutoCenter: {percent:.1f}% ({ac_value})")
+    logging.info(f"Initial AutoCenter: {percent:.1f}% ({ac_value})")
     
     # Gain 設定
     gn_value = int((percent / 100.0) * 0xFFFF)
-    gn_event = struct.pack("llHHI", int(time.time()), 0, ecodes.EV_FF, 
+    gn_event = struct.pack(INPUT_EVENT_FMT, int(time.time()), 0, ecodes.EV_FF, 
                             ecodes.FF_GAIN, gn_value)
     os.write(_fd, gn_event)  # ← 修正ポイント
-    print(f"Initial Gain: {percent:.1f}% ({gn_value})")
+    logging.info(f"Initial Gain: {percent:.1f}% ({gn_value})")
 
 
 import logging
@@ -212,7 +212,7 @@ def setup_logger(
 
 # === 使い方（テスト） ===
 setup_logger(log_file=None)  # ファイルにも出したい場合はパスを渡す
-print("")  # 見やすさのための空行
+logging.info("")  # 見やすさのための空行
 logging.info("Log Test Info")
 time.sleep(0.2)
 logging.debug("Log Test Debug")
@@ -220,9 +220,7 @@ time.sleep(0.5)
 logging.warning("Log Test Warning")
 time.sleep(0.7)
 logging.error("Log Test Error")
-print("")
-
-
+logging.info("")
 
 # 多重起動の予防
 import fcntl, os, sys
@@ -230,17 +228,15 @@ _lockf = open('/tmp/understeer.lock', 'w')
 try:
     fcntl.lockf(_lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except OSError:
-    print('UnderSteer is already running. Exit.', file=sys.stderr)
+    logging.info('UnderSteer is already running. Exit.', file=sys.stderr)
     sys.exit(1)
-
-
 
 def _sanitize_periodic(eff):
     """FF_PERIODICの最低限の正規化。EINVALを避けるための下駄"""
     p = eff.u.periodic
     # 1) magnitude==0 は多くの実機で EINVAL。→ ゼロは送らずソフト側で成功扱いにする方が安全
-    if int(p.magnitude) == 0:
-        return "skip_zero"
+    #if int(p.magnitude) == 0:
+    #    return "skip_zero"
 
     # 2) waveform 非対応なら SINE へ
     #if int(p.waveform) not in SUPPORTED_WAVEFORMS:
@@ -540,8 +536,6 @@ def write_ff_safe(dev, code, value, *,
             logging.exception("EV_FF write unexpected error")
             return "ioerr"
 
-
-
 class AsyncFFBProxy:
     """ 物理機器への FFB 送信 """
     def __init__(self, open_physical_ff_target, ff_mapper, us):
@@ -649,7 +643,6 @@ class AsyncFFBProxy:
         except Exception:
             return int(vid)
 
-
     def _dispatch_blocking(self, op):
         """
         物理ホイール(dev = evdev.InputDevice想定)へブロッキングで指示を送る。
@@ -661,7 +654,6 @@ class AsyncFFBProxy:
           - erase:       {"effect_id": int}
           - upload|update: 将来実装（現状はスタブ）
         """
-        logging.error("使ってないはず")
         path = getattr(getattr(self._handle, "dev", None), "path", "(no-handle)")
         logging.debug(f"[FFB-Pys-SendToWheel]<dispatch_block>: {op} {path}")
         # op は (kind, payload) か、_QueuedOp(kind=..., payload=...) のどちらか
@@ -841,7 +833,6 @@ class AsyncFFBProxy:
         return f"skip:unknown-kind:{kind}"
 
 
-
 """
 実装：FFB
 """
@@ -1009,6 +1000,8 @@ class FfEvioMapper:
                     "rumble.strong": int(eff.u.rumble.strong_magnitude),
                     "rumble.weak":   int(eff.u.rumble.weak_magnitude),
                 })
+            else:
+                logging.error(t)
         except Exception:
             # フィールド未定義等で失敗しても落とさない
             pass
@@ -1036,7 +1029,7 @@ class FfEvioMapper:
             logging.error(f"EVIOCSFF returned invalid id={eff_id}")
             raise OSError(errno.EINVAL, f"EVIOCSFF returned invalid id={eff_id}")
         
-        logging.debug(f"[Pys up] after EVIOCSFF id={eff_id}")
+        logging.info(f"[Pys up] after EVIOCSFF id={eff_id}")
         return int(eff_id)
 
     def erase_ff_effect_via_eviocrmff(self, phys_fd: int, effect_id: int) -> None:
@@ -1335,7 +1328,7 @@ def _build_condition_pair_from_generic(kind: int, eff_in) -> "ff_effect":
     try:
         # もし eff_in.condition[0 or 1] が既に入っているならそれを参照
         # （uinput から来る値は union の condition に入るケースと spring/damper 個別表現のケースがあります）
-        pass
+        logging.warning(f"[ff_effect]: {FfEvioMapper._ff_type_name(kind)}")
     except Exception:
         pass
 
@@ -1364,7 +1357,16 @@ def _build_condition_pair_from_generic(kind: int, eff_in) -> "ff_effect":
     eff.u.condition[0].left_coeff       = lc
     eff.u.condition[0].deadband         = db
     eff.u.condition[0].center           = ct
-
+    try:
+        eff.u.condition[0].right_saturation = ff_effect.u.condition[0].right_saturation
+        eff.u.condition[0].left_saturation  = ff_effect.u.condition[0].left_saturation
+        eff.u.condition[0].right_coeff      = ff_effect.u.condition[0].right_coeff
+        eff.u.condition[0].left_coeff       = ff_effect.u.condition[0].left_coeff
+        eff.u.condition[0].deadband         = ff_effect.u.condition[0].deadband
+        eff.u.condition[0].center           = ff_effect.u.condition[0].center
+    except Exception:
+        pass
+    
     # Y 軸（1）— 未使用でも必ず初期化！
     eff.u.condition[1].right_saturation = rs
     eff.u.condition[1].left_saturation  = ls
@@ -1372,10 +1374,16 @@ def _build_condition_pair_from_generic(kind: int, eff_in) -> "ff_effect":
     eff.u.condition[1].left_coeff       = lc
     eff.u.condition[1].deadband         = db
     eff.u.condition[1].center           = ct
-
+    try:
+        eff.u.condition[1].right_saturation = ff_effect.u.condition[1].right_saturation
+        eff.u.condition[1].left_saturation  = ff_effect.u.condition[1].left_saturation
+        eff.u.condition[1].right_coeff      = ff_effect.u.condition[1].right_coeff
+        eff.u.condition[1].left_coeff       = ff_effect.u.condition[1].left_coeff
+        eff.u.condition[1].deadband         = ff_effect.u.condition[1].deadband
+        eff.u.condition[1].center           = ff_effect.u.condition[1].center
+    except Exception:
+        pass
     return eff
-
-
 
 # --- ここで初めて sizeof を使う ---
 UP_SZ = sizeof(uinput_ff_upload)
@@ -1838,12 +1846,22 @@ class UInputFFDevice:
         self._ff_srv_stop.set()
 
     def shutdown(self, timeout=2.0):
+        # 1) FFサーバーに停止を通知
         self.stop()
-        try: os.close(self.ui_base_fd)
-        except OSError: pass
-        # スレッド/Taskを待つ（一定時間で諦めてハード中断へ）
+
+        # 2) スレッドがFDを使い終わるまで待つ
         for th in list(self._threads):
-            th.join(timeout=timeout)
+            if th.is_alive():
+                th.join(timeout=timeout)
+
+        # 3) スレッド終了後にFDを閉じる
+        try:
+            fd = getattr(self, "ui_base_fd", None)
+            if fd is not None:
+                os.close(fd)
+                self.ui_base_fd = None
+        except OSError:
+            pass
 
     def _start_watchdog(self, stall_sec=5.0):
         return
@@ -1927,19 +1945,66 @@ class UInputFFDevice:
             self._min_ff_gap_sec = 0.002   # 2ms（0.0〜0.005で調整）
             self._last_seen_req = (-1, -1) # (request_id, effect.type)
 
-        print(f"[LoopStart(U/FFB-Pys] <poll wait> {get_path_from_fd(self.ui_base_fd)} >>> Pys-Wheel")
+        logging.info(f"[LoopStart(U/FFB-Pys] <poll wait> {get_path_from_fd(self.ui_base_fd)} >>> Pys-Wheel")
         #logging.debug(f"LoopWait_ms: {LoopWait_ms}")
         while not self._ff_srv_stop.is_set():
             t0 = time.perf_counter_ns()
-            #evs = p.poll(LoopWait_ms)
+            evs = p.poll(LoopWait_ms)
+            if not evs:
+                continue
             dt_ms = (time.perf_counter_ns() - t0) / 1e6
 
             if self.us.DEBUG_TELEMETORY:
                 logging.warning(f"[POLL] timeout ~{dt_ms:.3f} ms (no events)")
+            
+            # FF_GAIN FF_AUTOCENTER zzzzzzzzzzzzz
+            
             # ここで “完全に” ドレインする（未処理を残さない）
             drained = 0
             while True:
                 # Read Next
+                EVENT_SIZE = struct.calcsize(INPUT_EVENT_FMT)
+                try:
+                    raw = os.read(self.ui_base_fd, EVENT_SIZE)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    logging.error("uinput FF event read failed")
+                    raise
+                if len(raw) != EVENT_SIZE:
+                    logging.error(
+                        "Unexpected uinput event size: %d (expected %d)",
+                        len(raw), EVENT_SIZE
+                    )
+                    continue
+                sec, usec, ev_type, ev_code, ev_value = struct.unpack(
+                    INPUT_EVENT_FMT, raw
+                )
+                if ev_type != 0x0101:
+                    continue
+                request_id = ev_value
+                if ev_code == UI_FF_UPLOAD:
+                    up = uinput_ff_upload()
+                    up.request_id = ev_value
+
+                    fcntl.ioctl(
+                        self.ui_base_fd,
+                        UI_BEGIN_FF_UPLOAD,
+                        up,
+                        True
+                    )
+                elif ev_code == UI_FF_ERASE:
+                    up = uinput_ff_upload()
+                    up.request_id = ev_value
+
+                    fcntl.ioctl(
+                        self.ui_base_fd,
+                        UI_BEGIN_FF_ERASE,
+                        up,
+                        True
+                    )
+                else:
+                    logging.error(f"[POLL] UI_FF - EVCode: {ev_code}")
                 kind, obj = self._try_begin_ff() # ここで読んでる！
                 #time.sleep(LoopWait_sec / 100) #fcntl.ioctl の後、必要
                 if kind is None:
@@ -2021,16 +2086,57 @@ class UInputFFDevice:
                             # 通常パスで END 済みならフォールバック不要
                             pass
                     drained += 1
+                else:
+                    logging.error(f"kind: {kind}")
+            # 1) 
+            if kind == "gain":
+                v = int(p.get("value", 0))
+                if   v < 0:     v = 0
+                elif v > 65535: v = 65535
+
+                # 物理デバイスへ反映
+                #dev.write(ecodes.EV_FF, ecodes.FF_GAIN, v)
+                #dev.syn()
+                ret = write_ff_safe(dev, ecodes.FF_GAIN, v)
+                logging.debug("物理デバイスへ反映 ok:gain / %s", ret)
+                return "ok:gain"
+            if kind == "autocenter":
+                # 受け口は柔軟に：enabled / value / autocenter のいずれか
+                v = p.get("value", None)
+                if v is None:
+                    if "enabled" in p:
+                        v = 65535 if bool(p["enabled"]) else 0
+                    elif "autocenter" in p:
+                        v = int(p["autocenter"])
+                    else:
+                        v = 0  # デフォルトでOFF
+                # 0..100 を送ってくるゲーム対策：0..65535 へ正規化
+                try:
+                    v = int(v)
+                except Exception:
+                    v = 0
+                if 0 <= v <= 100:
+                    v = int(round(v * 655.35))
+                # クランプ
+                if v < 0:
+                    v = 0
+                elif v > 65535:
+                    v = 65535
+                # 物理デバイスへ反映
+                ret = write_ff_safe(dev, ecodes.FF_AUTOCENTER, v)
+                logging.debug("物理デバイスへ反映 ok:autocenter / %s", ret)
+                return "ok:autocenter"
 
             # LoopEnd: UP,ER どっちも終わったらここに来る。
             # ドレイン有無に関わらず最後に 1 回だけ SYN
             if drained:
                 logging.warning("[Psy Poll] drained %d FF requests", drained)
+                drained = 0 # 実は不要
             # 初期化直後は無いのでIF文
             if CREATED_UI:
-                #print(get_path_from_fd(self.ui_base_fd))
+                #logging.info(get_path_from_fd(self.ui_base_fd))
                 write_input_event(self.ui_base_fd, E.EV_SYN, E.SYN_REPORT, 0)
-            time.sleep(LoopWait_sec) # Loop Wait 4ms
+            #time.sleep(LoopWait_sec) # Loop Wait 4ms
         # LoopEnd: ドライバ終了のタイミングでここ
 
     import os, fcntl, select, errno, logging
@@ -2126,6 +2232,14 @@ class UInputFFDevice:
     def _handle_ff_upload(self, up: "uinput_ff_upload"):
         virt_id = int(up.effect.id)  # uinput から来た仮想ID（更新キー）
         eff = up.effect               # ctypes 構造体
+
+        """
+        [Forza Horizon 6 の場合]
+            CONSTANT(82)
+            DAMPER(85)
+            PERIODIC(81)
+            SPRING(83)
+        """
 
         #if self._coalesce_and_maybe_skip_constant(up):
         #    return  # UI_END_FF_UPLOAD 側で up.retval を見て完了させる
@@ -2275,8 +2389,12 @@ class UInputFFDevice:
                 self._effect_types[int(eff.id)] = ecodes.FF_PERIODIC
                 
                 wave = eff.u.periodic.waveform
+                mag = eff.u.periodic.magnitude
+                if mag == 0:
+                    logging.debug("Mag : 0")
+                    mag = 20000
                 if wave in (ecodes.FF_SINE, ecodes.FF_TRIANGLE, ecodes.FF_SQUARE):
-                    logging.debug(f"[FFB-Pys(UP)] PERIODIC: waveform={wave} mag={eff.u.periodic.magnitude}")
+                    logging.debug(f"[FFB-Pys(UP)] PERIODIC: waveform={wave} mag={mag}")
                 else:
                     logging.warning(f"[FFB-Pys(UP)] PERIODIC: Unknown waveform {wave}")
 
@@ -2323,6 +2441,7 @@ class UInputFFDevice:
             #up.effect = eff
             logging.debug(f"Pys / UPLOAD mapped virt={virt_id} -> phys={phys_id} new_phys={new_phys_id} (type={eff.type})")
         except OSError as e:
+            logging.error(f"[FFB-Pys(UP)] Err and Retry... ")
             if e.errno == errno.ENOSPC:
                 # まずLRUで整理
                 freed = self.ff_mapper._evict_some_phys_slots(limit=4)
@@ -2441,7 +2560,6 @@ class UInputFFDevice:
             int(fuzz), int(flat), int(resolution)
         )
         fcntl.ioctl(self.ui_base_fd, UI_ABS_SETUP, setup)
-
 
 
 """
@@ -2788,7 +2906,7 @@ class KeymapTSV:
             #if not lhs or not rhs:
             #    logging.warning(f"[keymap] L{idx}: skip (no separator) : {orig}")
             #    continue
-            print(lhs , " and " , rhs)
+            logging.info(lhs , " and " , rhs)
             try:
                 dst_keys = self._parse_keys(rhs)
                 if not dst_keys:
@@ -2929,8 +3047,8 @@ def merge_capabilities(
     keys: Set[int] = set()
     abs_list: Dict[int, AbsInfo] = {}
     ignoreArr = ignore_ffb.strip().split(",")
-    #print("てすと")
-    #print(ignoreArr)
+    #logging.info("てすと")
+    #logging.info(ignoreArr)
 
     def take_abs(source):
         abs_caps = source.get(ecodes.EV_ABS, [])
@@ -2991,7 +3109,7 @@ def merge_capabilities(
             }
         """
         ff_features = sorted(list(ff_features_set))
-        print("")
+        logging.info("")
         logging.debug("ff_features")
         logging.debug(ff_features)
 
@@ -3105,8 +3223,6 @@ def find_hidraw_for_event(event_path: str, *, timeout_sec=0.03, max_up=6) -> str
     return None
 
 
-
-
 # ------------------------
 # パイプライン
 # ------------------------
@@ -3141,17 +3257,17 @@ class UnderSteer:
         else:
             self.ignore_ffb = "0"
         
-        #print("以下FFB無視")
-        #print(self.ignore_ffb)
+        #logging.info("以下FFB無視")
+        #logging.info(self.ignore_ffb)
         
         # for FFB Upload
-        self.ff_worker: Optional["AsyncFFBProxy"] = None
-        self.ff_cache_sig: Dict[Tuple[str, int], int] = {}  # (type, hash)->effect_id
+        #self.ff_worker: Optional["AsyncFFBProxy"] = None
+        #self.ff_cache_sig: Dict[Tuple[str, int], int] = {}  # (type, hash)->effect_id
         # for FFB EnQueue
         # self.ff_queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue(maxsize=1024)
-        self._ff_consumer_task: asyncio.Task | None = None
+        #self._ff_consumer_task: asyncio.Task | None = None
         # （任意）同種イベントの間引き用
-        self._ff_coalesce: dict[tuple[str, int], int] = {}
+        #self._ff_coalesce: dict[tuple[str, int], int] = {}
         
         self.gear_mapper = gear_mapper
 
@@ -3188,12 +3304,12 @@ class UnderSteer:
         self.ff_mapper = FfEvioMapper()
         
         # 仮想デバイスの VID/PID/名前を引数で指定可能に
-        # （G29偽装が既定：0x046d/0xc24f）
+        # （T-284 偽装が既定：0x044f/0xB677）
         self.ui = UInputFFDevice(
             ui_caps,
-            name=(args.vname if args else "UnderSteer FFB Wheel-Shifter"),
-            vid=(args.vid if args else 0x046d),
-            pid=(args.pid if args else 0xc24f),
+            name=(args.vname if args else "ThrustMaster, Inc. Thrustmaster Racing Wheel FFB - UnderSteer FFB Wheel-Shifter"),
+            vid=(args.vid if args else 0x044f),
+            pid=(args.pid if args else 0xB677),
             version=0x0100,
             ff_effects_max=64,
             
@@ -3207,12 +3323,12 @@ class UnderSteer:
         )
 
         self.ui_event_path = self.ui.event_path
-        print(
+        logging.info(
             f"[UnderSteer Device] created: {self.ui_event_path} name='{self.ui.name}' "
             f"vid=0x{self.ui.vid:04x} pid=0x{self.ui.pid:04x} "
         )
 
-        print(f"[wheel pys-device]:{self.wheel_info.dev.path}")
+        logging.info(f"[wheel pys-device]:{self.wheel_info.dev.path}")
         self.wheel_info.hidraw_path = find_hidraw_for_event(self.wheel_info.dev.path)
         if self.wheel_info.hidraw_path:
             logging.info("[wheel] hidraw_path=%s", self.wheel_info.hidraw_path)
@@ -3220,18 +3336,20 @@ class UnderSteer:
             logging.info("[wheel] hidraw_path= None")
         
         # ここ FFB
+        self.FFB00 = AsyncFFBProxy(self.wheel_info, self.ff_mapper, self)
         self.phys_fd, self.phys_event_path = open_wheel_event_fd(self.wheel_info, require_ff=True)
         
         logging.info("UnderSteer: InputDevice : %s", self.ui_event_path)
         # 自身（仮想）のイベントを読み取るために open（FF_GAIN/AUTOCENTER 反映用）
         self.self_dev = InputDevice(self.ui_event_path)
+        """
         try:
             # 通常は 64 で十分。ホイールによっては 96/128 のこともある
             stats = erase_all_ff_effects_async(self.wheel_info.dev, max_id=64, timeout_per_id=0.50)
             # 必要ならログ出力は stats を見る
         except Exception as e:
             logging.error(f"Pys / erase_all_ff_effects_async failed: {e}")
-        
+        """
         # 仮想FFBデバイス作成直後に初期ゲイン設定
         # self.wheel_info.dev.fd に対して、Gain/AutoCenter
         try:
@@ -3243,17 +3361,17 @@ class UnderSteer:
         # 物理ホイールが何をサポートしているか
         # FF_CONSTANT, FF_SPRING, FF_DAMPER, FF_RUMBLE, FF_PERIODIC, 
         # FF_GAIN, FF_AUTOCENTER 等
-        print("# 物理ホイールが何をサポートしているか")
+        logging.info("# 物理ホイールが何をサポートしているか")
         strW = ""
         for i in self.wheel_info.dev.capabilities(verbose=False).get(ecodes.EV_FF, []):
             strW = strW + " " + FfEvioMapper._ff_type_name(i)
-        print(strW)
+        logging.info(strW)
         
-        print("# 仮想ホイールが何をサポートしているか")
+        logging.info("# 仮想ホイールが何をサポートしているか")
         strW = ""
         for i in self.self_dev.capabilities(verbose=False).get(ecodes.EV_FF, []):
             strW = strW + " " + FfEvioMapper._ff_type_name(i)
-        print(strW)
+        logging.info(strW)
 
         logging.info("UnderSteer: Init End")
         logging.info("---")
@@ -3299,7 +3417,7 @@ class UnderSteer:
             pass
 
         try:
-            print(f"[LoopStart(Rd] : <{src_tag}>")
+            logging.info(f"[LoopStart(Rd] : <{src_tag}>")
             async for ev in src.async_read_loop():
                 hat_name = None
                 # HAT 方向名（-1/0/1 の遷移を押下/解放として管理）
@@ -3336,10 +3454,10 @@ class UnderSteer:
                 # 押したボタン名のエコー（TSV作成補助）
                 if self.echo_buttons and ev.type == ecodes.EV_KEY and ev.value == 1:
                     name = code_to_name(ev.code)
-                    print(f"[tap][{src_tag}] {name} ({ev.code})", flush=True)
+                    logging.info(f"[tap][{src_tag}] {name} ({ev.code})", flush=True)
                     if self.echo_buttons_tsv:
                         # そのまま keymap の素材にできるようタブ区切りテンプレ行も出す
-                        print(f"{name}\tKEY_???", flush=True)
+                        logging.info(f"{name}\tKEY_???", flush=True)
 
                 # HAT 方向名（-1/0/1 の遷移を押下/解放）
                 if ev.type == ecodes.EV_ABS:
@@ -3356,9 +3474,9 @@ class UnderSteer:
                                 prev_name = self._hat_dir_name(ev.code, prev)
                                 if prev_name:
                                     if self.echo_buttons:
-                                        print(f"[tap][{src_tag}] {prev_name} (release)", flush=True)
+                                        logging.info(f"[tap][{src_tag}] {prev_name} (release)", flush=True)
                                     if self.echo_buttons_tsv:
-                                        print(f"{prev_name}\tKEY_???", flush=True)
+                                        logging.info(f"{prev_name}\tKEY_???", flush=True)
                                     if self.keymap and prev_name in self.keymap.watch_names:
                                         try:
                                             self.keymap.handle_named(prev_name, False)
@@ -3369,9 +3487,9 @@ class UnderSteer:
                                 cur_name = self._hat_dir_name(ev.code, cur)
                                 if cur_name:
                                     if self.echo_buttons:
-                                        print(f"[tap][{src_tag}] {cur_name} (press)", flush=True)
+                                        logging.info(f"[tap][{src_tag}] {cur_name} (press)", flush=True)
                                     if self.echo_buttons_tsv:
-                                        print(f"{cur_name}\tKEY_???", flush=True)
+                                        logging.info(f"{cur_name}\tKEY_???", flush=True)
                                     if self.keymap and cur_name in self.keymap.watch_names:
                                         try:
                                             self.keymap.handle_named(cur_name, True)
@@ -3426,6 +3544,19 @@ class UnderSteer:
             except Exception:
                 pass
 
+    async def _pipe_virtual_ff(self, src: InputDevice):
+        """仮想デバイス側に来た FFB (Gain / AutoCenter 等) を物理デバイスへ流す"""
+        try:
+            async for ev in src.async_read_loop():
+                if ev.type == ecodes.EV_FF:
+                    # 物理デバイス (self.phys_fd または wheel_info.dev.fd) へ転送
+                    try:
+                        os.write(self.phys_fd, struct.pack("llHHi", 0, 0, ev.type, ev.code, ev.value))
+                        logging.debug(f"[FFB Pass-through] type={ev.type} code={ev.code} value={ev.value}")
+                    except Exception as e:
+                        logging.warning(f"Failed to pass-through FF event: {e}")
+        except asyncio.CancelledError:
+            pass
 
     def _write_ff(self, wheel_dev, t, c, v):
         try:
@@ -3453,20 +3584,21 @@ class UnderSteer:
                 try:
                     dev.grab()
                     grabbed = True
-                    print(f"grabbed: {tag}")
+                    logging.info(f"grabbed: {tag}")
                 except Exception as e:
                     # grab 不可でも実運用では続行したいケースが多い
                     logging.warning("grab failed (%s): %s", tag, e)
 
-        print("")
-        print("TaskGroup waiting Loop")
+        logging.info("")
+        logging.info("TaskGroup waiting Loop")
         # 例外が1タスクで起きたら全体を畳む実装（TaskGroup）
         try:
             async with asyncio.TaskGroup() as tg:
                 # 入力中継（wheel / shifter）
                 t1 = tg.create_task(self._pipe_events(self.wheel_info.dev, "wheel"))
                 t2 = tg.create_task(self._pipe_events(self.shifter_info.dev, "shift"))
-                self._tasks.extend([t1, t2])
+                t3 = tg.create_task(self._pipe_virtual_ff(self.self_dev))
+                self._tasks.extend([t1, t2, t3])
                 # 明示停止が来るまで待つ（どれかが例外で落ちれば TaskGroup が伝播して抜ける）
                 await self._stop_ev.wait()
 
@@ -3580,10 +3712,9 @@ class UnderSteer:
         未対応/不要イベントは None を返す。
         """
         from evdev import ecodes
-
-        logging.error("ここは使ってない")
+        
         if ev.type != ecodes.EV_FF:
-            return None
+            return None, None
 
         code = ev.code      # FF_GAIN(96) / FF_AUTOCENTER(97) / それ以外は effect_id
         value = ev.value    # 0=停止, >0=再生(繰返し回数の意味合いを持つこともある)
@@ -3600,7 +3731,7 @@ class UnderSteer:
             return ("autocenter", {"autocenter": int(value)})
 
         if self.ff_passthrough_easy:
-            return None
+            return None, None
 
         # ここからは「エフェクトの再生/停止」トリガ
         # code は "effect_id"（upload 済みの ID）、value は 0/非0（停止/再生）
@@ -3610,7 +3741,7 @@ class UnderSteer:
             # 一部ドライバは value を繰返し回数として使うことがあるため温存
             return ("play", {"effect_id": effect_id, "repeat": int(value)})
         else:
-            return ("stop", {"effect_id": effect_id})
+            return ("stop", {"effect_id": effect_id, "repeat": 0})
 
 import fcntl
 import ctypes
@@ -3668,10 +3799,10 @@ def build_argparser():
 
     # ▼▼ 追加：仮想デバイスの偽装ID/名称を指定できるように ▼▼
     p.add_argument("--vid", type=lambda s: int(s, 0),
-                   default=0x046d, help="仮想デバイスの Vendor ID (例: 0x046d = Logitech)")
+                   default=0x044f, help="仮想デバイスの Vendor ID (例: 0x044f = ThrustMaster)")
     p.add_argument("--pid", type=lambda s: int(s, 0),
-                   default=0xc24f, help="仮想デバイスの Product ID (例: 0xc24f = G29 Driving Force Racing Wheel PS3)")
-    p.add_argument("--vname", type=str, default="UnderSteer FFB Wheel-Shifter",
+                   default=0xB677, help="仮想デバイスの Product ID (例: 0xB677 = T-248 Racing Wheel)")
+    p.add_argument("--vname", type=str, default="ThrustMaster, Inc. Thrustmaster Racing Wheel FFB - UnderSteer FFB Wheel-Shifter",
                    help="仮想デバイス名 (任意の文字列)")
 
     p.add_argument("--ff-off", action='store_true',
@@ -3707,7 +3838,7 @@ def list_button_names(devinfo, label):
             key_entries = [ (None, code) for code in caps_n[ecodes.EV_KEY] ]
 
         if not key_entries:
-            print(f"[i] {label}: (no buttons)")
+            logging.info(f"[i] {label}: (no buttons)")
             return
 
         names = []
@@ -3733,7 +3864,7 @@ def list_button_names(devinfo, label):
 
         # 重複除去＆安定ソート
         uniq = sorted(set(names))
-        print(f"[i] {label}: buttons={len(uniq)} → {', '.join(uniq)}")
+        logging.info(f"[i] {label}: buttons={len(uniq)} → {', '.join(uniq)}")
     except Exception as e:
         logging.error(f"[i] {label}: failed to enumerate buttons ({e})")
 
@@ -3742,7 +3873,7 @@ import signal
 # これを main() の最初の方に追加
 def setup_signal_handlers(loop, app):
     def handle_sigterm():
-        print("[Signal] SIGTERM received -> graceful stop.")
+        logging.info("[Signal] SIGTERM received -> graceful stop.")
         app._stop_ev.set()
         # TaskGroupのタスクを明示的にキャンセル（任意）
         if hasattr(app, "_tasks"):
@@ -3753,7 +3884,10 @@ def setup_signal_handlers(loop, app):
             ### task.cancel()
             app.ui.stop()
         except Exception as e:
-            raise
+            #raise
+            pass
+        logging.info("[Signal Done] graceful stop.")
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, handle_sigterm)
 
@@ -3784,24 +3918,24 @@ async def main():
     )
     infos = enumerate_input()
 
-    print("")
-    print("UnderSteer 実行開始")
-    print("  $ " + " ".join(sys.argv))
-    print(args)
-    print("")
+    logging.info("")
+    logging.info("UnderSteer 実行開始")
+    logging.info("  $ " + " ".join(sys.argv))
+    logging.info(args)
+    logging.info("")
     
     if "-vv" in sys.argv:
-        print("[i] 検出デバイス一覧（ベンダID:プロダクトID / name / phys / uniq）")
+        logging.info("[i] 検出デバイス一覧（ベンダID:プロダクトID / name / phys / uniq）")
         for i in infos:
-            print("   ", fmt_info(i))
-        print("")
-        print("")
+            logging.info("   " + fmt_info(i))
+        logging.info("")
+        logging.info("")
     if "-vvv" in sys.argv:
-        print("[i] 検出デバイス一覧（ベンダID:プロダクトID / name / phys / uniq）")
+        logging.info("[i] 検出デバイス一覧（ベンダID:プロダクトID / name / phys / uniq）")
         for i in infos:
-            print("   ", fmt_info(i))
-        print("")
-        print("")
+            logging.info("   " + fmt_info(i))
+        logging.info("")
+        logging.info("")
 
     if args.list:
         return 0
@@ -3813,7 +3947,7 @@ async def main():
     if args.wheel:
         wheel_info = find_by_path(infos, args.wheel)
         if not wheel_info:
-            print(f"[!] wheel 指定が見つかりません: {args.wheel}", file=sys.stderr)
+            logging.info(f"[!] wheel 指定が見つかりません: {args.wheel}", file=sys.stderr)
             return 2
     else:
         wheel_info = pick_device(infos, args.scan_names[0])
@@ -3821,13 +3955,13 @@ async def main():
     if args.shifter:
         shifter_info = find_by_path(infos, args.shifter)
         if not shifter_info:
-            print(f"[!] shifter 指定が見つかりません: {args.shifter}", file=sys.stderr)
+            logging.info(f"[!] shifter 指定が見つかりません: {args.shifter}", file=sys.stderr)
             return 2
     else:
         shifter_info = pick_device(infos, args.scan_names[1])
 
     if not wheel_info or not shifter_info:
-        print("[!] wheel / shifter の自動選定に失敗しました。--list で名前を確認し、--wheel/--shifter で明示指定してください。", file=sys.stderr)
+        logging.info("[!] wheel / shifter の自動選定に失敗しました。--list で名前を確認し、--wheel/--shifter で明示指定してください。", file=sys.stderr)
         return 3
 
     logging.debug(f"wheel  : {fmt_info(wheel_info)}")
@@ -3843,13 +3977,13 @@ async def main():
         gear_mapper = GearMapper(Path(args.gear_map))
         # ログ表示（割当の確認）
         gs = len(gear_mapper.gear_requirements)
-        print(f"INFO: [gear] defined={gs} gears; neutral={'explicit' if gear_mapper.neutral_button is not None else 'implicit'}; watch={sorted(gear_mapper.watch_codes)}")
-        print("")
+        logging.info(f"INFO: [gear] defined={gs} gears; neutral={'explicit' if gear_mapper.neutral_button is not None else 'implicit'}; watch={sorted(gear_mapper.watch_codes)}")
+        logging.info("")
     keymap = None
     if args.keymap:
         keymap = KeymapTSV(Path(args.keymap))
-        print(f"INFO: [keymap] entries={len(keymap.watch_codes)}")
-        print(f"INFO: [keymap] entries={len(keymap.watch_names)}")
+        logging.info(f"INFO: [keymap] entries={len(keymap.watch_codes)}")
+        logging.info(f"INFO: [keymap] entries={len(keymap.watch_names)}")
     app = UnderSteer(
         wheel_info, shifter_info,
         ff_passthrough=args.ff_pass_through,
@@ -3869,19 +4003,19 @@ async def main():
     if args.no_grab:
         try:
             wheel_info.dev.ungrab()
-            print("ungrab wheel")
+            logging.info("ungrab wheel")
         except Exception:
             pass
         try:
             shifter_info.dev.ungrab()
-            print("ungrab shifter")
+            logging.info("ungrab shifter")
         except Exception:
             pass
     
     try:
         await app.run()
     except KeyboardInterrupt:
-        print("\n[] Ctrl-C で終了")
+        logging.info("\n[] Ctrl-C で終了")
     finally:
         try:
             if keymap:
@@ -3892,6 +4026,6 @@ async def main():
 
 if __name__ == "__main__":
     if os.geteuid() != 0:
-        print("[!] 実行には通常 root 権限が必要です（/dev/uinput, /dev/input/event* のアクセス）", file=sys.stderr)
+        logging.info("[!] 実行には通常 root 権限が必要です（/dev/uinput, /dev/input/event* のアクセス）", file=sys.stderr)
     rc = asyncio.run(main())
     sys.exit(rc)
