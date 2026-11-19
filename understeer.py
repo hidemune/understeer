@@ -3411,7 +3411,8 @@ class UnderSteer:
         
         # 可能なら初期値を一度読む
         try:
-            absinfo = dev.absinfo
+            #absinfo = dev.absinfo
+            absinfo = src.absinfo
             for name, code in ABS.items():
                 if code in absinfo:
                     latest[name] = absinfo[code].value

@@ -60,7 +60,8 @@ else
 fi
 
 #oversteer --device "Thrustmaster Thrustmaster Racing Wheel FFB" -p "TM-T128" &
-oversteer &
+# 無い方が良いかも
+#oversteer &
 
 echo ""
 echo "You can select \"Force feedback mode:\""
@@ -113,7 +114,7 @@ if [ "$sel" = "1" ]; then
   flg="T"; minimize_self
   steam steam://rungameid/2483190 > /dev/null 2>&1 &
   #sudo python3 understeer.py --ff-pass-through$mode --no-grab --verbose > log.txt 2>&1 || sync
-  sudo python3 understeer.py --ff-pass-through$mode --no-grab -vv 2>&1 | tee ../log.txt
+  sudo python3 understeer.py --ff-pass-through$mode --no-grab -vv 2>&1 #| tee ../log.txt
 fi
 
 if [ "$sel" = "2" ]; then
@@ -121,7 +122,7 @@ if [ "$sel" = "2" ]; then
   flg="T"; minimize_self
   steam steam://rungameid/1551360 >/dev/null 2>&1 &
   # --keymap keymapFH5.dat      キーボードに入力を転送したい場合
-  sudo python3 understeer.py --ff-pass-through$mode --no-grab -vv 2>&1 | tee ../log.txt
+  sudo python3 understeer.py --ff-pass-through$mode --no-grab -vv 2>&1 #| tee ../log.txt
 fi
 
 if [ "$sel" = "3" ]; then
@@ -132,8 +133,8 @@ if [ "$sel" = "3" ]; then
   # --keymap keymapTDUSC.dat    キーボードに入力を転送したい場合
   sudo python3 understeer.py --ff-pass-through$mode --gear-map gears.dat \
                         --keymap keymapTDUSC.dat \
-                        --vid 0x044F --pid 0xB669 -vv 2>&1 | tee ../log.txt
-                        #--vid 0x046d --pid 0xc24f -vv 2>&1 | tee ../log.txt
+                        --vid 0x044F --pid 0xB669 -vv 2>&1 #| tee ../log.txt
+                        #--vid 0x046d --pid 0xc24f -vv 2>&1 #| tee ../log.txt
 fi
 
 if [ "$sel" = "4" ]; then
@@ -174,7 +175,7 @@ if [ "$sel" = "11" ]; then
   steam steam://rungameid/227300 >/dev/null 2>&1 &
   # --gear-map gears.dat        ニュートラル入力が別途必要な場合に指定
   sudo python3 understeer.py --gear-map gears.dat --ff-pass-through$mode \
-                            --vid 0x044F --pid 0xB669 -vv 2>&1 | tee ../log.txt
+                            --vid 0x044F --pid 0xB669 -vv 2>&1 #| tee ../log.txt
 fi
 
 if [ "$sel" = "12" ]; then
