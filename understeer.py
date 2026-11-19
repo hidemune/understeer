@@ -530,10 +530,10 @@ def write_ff_safe(dev, code, value, *,
             elif e.errno == errno.EIO:
                 return "ioerr"
             else:
-                logging.exception("EV_FF write unexpected errno=%s", e.errno)
+                logging.error("EV_FF write unexpected errno=%s", e.errno)
                 return f"errno:{e.errno}"
         except Exception:
-            logging.exception("EV_FF write unexpected error")
+            logging.error("EV_FF write unexpected error")
             return "ioerr"
 
 class AsyncFFBProxy:
@@ -1170,8 +1170,10 @@ def upload_effect(psy_fd, effect_buf):
             # psy_fd から evdev.InputDevice を再解決できないので、
             # 「仮想デバイス側」を引数で貰う設計に変える or クリア自体をやめる。
             # 簡易対処：スロット不足時はそのまま例外にして上位で判断。
+            logging.error(f"UploadErro ({e.errno})")
             raise
         else:
+            logging.error(f"UploadErro ({e.errno})")
             raise
     # id 書き戻しの読み出しはそのまま
     hdr = struct.unpack(_FF_HDR_FMT, effect_buf[:struct.calcsize(_FF_HDR_FMT)])
@@ -2396,7 +2398,7 @@ class UInputFFDevice:
                 if wave in (ecodes.FF_SINE, ecodes.FF_TRIANGLE, ecodes.FF_SQUARE):
                     logging.debug(f"[FFB-Pys(UP)] PERIODIC: waveform={wave} mag={mag}")
                 else:
-                    logging.warning(f"[FFB-Pys(UP)] PERIODIC: Unknown waveform {wave}")
+                    logging.error(f"[FFB-Pys(UP)] PERIODIC: Unknown waveform {wave}")
 
                 # ★ custom未使用なら必ずゼロ化（機種/ドライバ依存のEINVAL回避）
                 try:
@@ -3304,7 +3306,7 @@ class UnderSteer:
         self.ff_mapper = FfEvioMapper()
         
         # 仮想デバイスの VID/PID/名前を引数で指定可能に
-        # （T-284 偽装が既定：0x044f/0xB677）
+        # （T-150 偽装が既定：0x044f/0xB677）
         self.ui = UInputFFDevice(
             ui_caps,
             name=(args.vname if args else "ThrustMaster, Inc. Thrustmaster Racing Wheel FFB - UnderSteer FFB Wheel-Shifter"),
@@ -3333,7 +3335,7 @@ class UnderSteer:
         if self.wheel_info.hidraw_path:
             logging.info("[wheel] hidraw_path=%s", self.wheel_info.hidraw_path)
         else:
-            logging.info("[wheel] hidraw_path= None")
+            logging.error("[wheel] hidraw_path= None")
         
         # ここ FFB
         self.FFB00 = AsyncFFBProxy(self.wheel_info, self.ff_mapper, self)

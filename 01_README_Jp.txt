@@ -214,10 +214,18 @@ TS-PC Racer	044F	B689	対応
 TS-XW	044F	B692	対応
 
 
-
+T300 RS GT	044F	B66F
 T150	044F	B677
+TX Racing Wheel	044F	B669
 
+            name="UnderSteer FFB Wheel-Shifter",
+            vendor=0x046d,   # ← Logitech, Inc.
+            product=0xc24f,  # ← G29 Driving Force Racing Wheel (PS3)
+            version=0x0100,  # 
 
 PROTON_VKD3D_HEAP=1 VKD3D_CONFIG=enable_experimental_features,descriptor_heap gamemoderun SDL_GAMECONTROLLER_IGNORE_DEVICES=0 SDL_HIDAPI_JOYSTICK=0 SDL_GAMECONTROLLER_IGNORE_DEVICES=0x044f/0xb696 SDL_HIDAPI_IGNORE_DEVICES=0x044f/0xb696 %command%
 
+SDL_GAMECONTROLLER_IGNORE_DEVICES=0 SDL_HIDAPI_JOYSTICK=0 SDL_GAMECONTROLLER_IGNORE_DEVICES=0x044f/0xb696 SDL_HIDAPI_IGNORE_DEVICES=0x044f/0xb696 %command%
 
+[TDUSC Setting]
+/run/media/user/inPC/Steam/steamapps/compatdata/1249970/pfx/drive_c/users/steamuser/Documents/My Games/Test Drive Unlimited Solar Crown/UserSettings.cfg
