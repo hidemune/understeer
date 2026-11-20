@@ -60,8 +60,11 @@ else
 fi
 
 #oversteer --device "Thrustmaster Thrustmaster Racing Wheel FFB" -p "TM-T128" &
-# 無い方が良いかも
-#oversteer &
+# FFB無しのソフト向け
+# oversteer を別途インストールし、auto00という名前でプロファイルを作成しておいてください。
+# 「Force Feedback」タブで各種Gainをお好みの強さで設定します。
+# 同じ設定でプロファイルを複数作っておくと、「GameがFFBを切ってしまう場合」に切り替えが楽です。
+oversteer -p auto00 -g 2>/dev/null &
 
 echo ""
 echo "You can select \"Force feedback mode:\""
